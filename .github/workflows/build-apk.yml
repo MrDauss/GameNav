@@ -24,6 +24,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          cache: true
 
       - name: Check Java
         run: java -version
@@ -35,8 +36,10 @@ jobs:
         run: flutter pub get
 
       - name: Apply Android permissions
-        run: |
-          cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+        run: cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+
+      - name: Analyze
+        run: flutter analyze
 
       - name: Build APK
         run: flutter build apk --release
@@ -44,5 +47,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: GameNav-APK
+          name: GameNav-APK-v0.4
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
