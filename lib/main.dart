@@ -151,7 +151,7 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   static const _demoStyle =
-      'https://demotiles.maplibre.org/style.json';
+    'https://tiles.openfreemap.org/styles/liberty';
 
   final _searchController = TextEditingController();
 
