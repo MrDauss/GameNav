@@ -1,4 +1,4 @@
-yupname: gamenav
+name: gamenav
 description: Game-style GPS navigation prototype
 publish_to: 'none'
 version: 0.4.0+4
