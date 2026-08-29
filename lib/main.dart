@@ -47,6 +47,362 @@ class RouteResult {
   );
 }
 
+class RoadSnapResult {
+  final LatLng point;
+  final double distanceMeters;
+
+  const RoadSnapResult(this.point, this.distanceMeters);
+}
+
+class TrafficSignalInfo {
+  final String id;
+  final LatLng point;
+  final String? phase;
+  final int? remainingSeconds;
+  final double? confidence;
+
+  const TrafficSignalInfo({
+    required this.id,
+    required this.point,
+    this.phase,
+    this.remainingSeconds,
+    this.confidence,
+  });
+
+  TrafficSignalInfo copyWithTiming({
+    String? phase,
+    int? remainingSeconds,
+    double? confidence,
+  }) {
+    return TrafficSignalInfo(
+      id: id,
+      point: point,
+      phase: phase ?? this.phase,
+      remainingSeconds: remainingSeconds ?? this.remainingSeconds,
+      confidence: confidence ?? this.confidence,
+    );
+  }
+}
+
+class GameMapPalette {
+  final String background;
+  final String land;
+  final String water;
+  final String park;
+  final String building;
+  final String road;
+  final String roadMajor;
+  final String roadOutline;
+  final String label;
+  final String labelHalo;
+
+  const GameMapPalette({
+    required this.background,
+    required this.land,
+    required this.water,
+    required this.park,
+    required this.building,
+    required this.road,
+    required this.roadMajor,
+    required this.roadOutline,
+    required this.label,
+    required this.labelHalo,
+  });
+}
+
+class GameStyleBuilder {
+  static Future<String> build(GameThemeSpec theme) async {
+    final response = await http
+        .get(
+          Uri.parse(theme.mapStyle),
+          headers: const {'Accept': 'application/json'},
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) return theme.mapStyle;
+
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) return theme.mapStyle;
+
+    final palette = _palette(theme.id);
+    final layers = decoded['layers'];
+    if (layers is! List) return theme.mapStyle;
+
+    for (final raw in layers) {
+      if (raw is! Map<String, dynamic>) continue;
+      final type = raw['type']?.toString() ?? '';
+      final id = raw['id']?.toString().toLowerCase() ?? '';
+      final sourceLayer = raw['source-layer']?.toString().toLowerCase() ?? '';
+      final token = '$id $sourceLayer';
+      final paintRaw = raw['paint'];
+      final paint = paintRaw is Map<String, dynamic>
+          ? paintRaw
+          : <String, dynamic>{};
+      raw['paint'] = paint;
+
+      if (type == 'background') {
+        paint['background-color'] = palette.background;
+        continue;
+      }
+
+      if (type == 'fill') {
+        if (_containsAny(token, ['water', 'ocean', 'lake'])) {
+          paint['fill-color'] = palette.water;
+          paint['fill-opacity'] = 0.96;
+        } else if (_containsAny(token, ['building'])) {
+          paint['fill-color'] = palette.building;
+          paint['fill-opacity'] = 0.88;
+        } else if (_containsAny(token, [
+          'park',
+          'grass',
+          'wood',
+          'forest',
+          'landcover',
+          'cemetery',
+        ])) {
+          paint['fill-color'] = palette.park;
+          paint['fill-opacity'] = 0.9;
+        } else if (_containsAny(token, ['landuse', 'land'])) {
+          paint['fill-color'] = palette.land;
+        }
+        continue;
+      }
+
+      if (type == 'fill-extrusion') {
+        if (_containsAny(token, ['building'])) {
+          paint['fill-extrusion-color'] = palette.building;
+          paint['fill-extrusion-opacity'] = 0.82;
+        }
+        continue;
+      }
+
+      if (type == 'line') {
+        if (_containsAny(token, ['road', 'transportation', 'highway', 'street'])) {
+          final major = _containsAny(token, [
+            'motorway',
+            'trunk',
+            'primary',
+            'major',
+          ]);
+          final casing = _containsAny(token, ['case', 'casing', 'outline']);
+          paint['line-color'] = casing
+              ? palette.roadOutline
+              : (major ? palette.roadMajor : palette.road);
+          paint['line-opacity'] = casing ? 0.78 : 0.96;
+          if (theme.id == 'neon_coast' || theme.id == 'cyber_grid') {
+            paint['line-blur'] = casing ? 0.4 : 0.08;
+          }
+        } else if (_containsAny(token, ['waterway', 'river', 'stream'])) {
+          paint['line-color'] = palette.water;
+          paint['line-opacity'] = 0.9;
+        } else if (_containsAny(token, ['boundary'])) {
+          paint['line-color'] = palette.roadOutline;
+          paint['line-opacity'] = 0.35;
+        }
+        continue;
+      }
+
+      if (type == 'symbol') {
+        paint['text-color'] = palette.label;
+        paint['text-halo-color'] = palette.labelHalo;
+        paint['text-halo-width'] = 1.2;
+        if (theme.id == 'frontier') {
+          paint['icon-opacity'] = 0.72;
+        } else if (theme.id == 'cyber_grid') {
+          paint['icon-opacity'] = 0.82;
+        }
+        continue;
+      }
+
+      if (type == 'raster') {
+        if (theme.id == 'frontier') {
+          paint['raster-saturation'] = -0.55;
+          paint['raster-contrast'] = 0.18;
+          paint['raster-brightness-max'] = 0.82;
+        } else if (theme.id != 'classic') {
+          paint['raster-saturation'] = -0.75;
+          paint['raster-contrast'] = 0.22;
+          paint['raster-brightness-max'] = 0.7;
+        }
+      }
+    }
+
+    return jsonEncode(decoded);
+  }
+
+  static bool _containsAny(String value, List<String> needles) {
+    for (final needle in needles) {
+      if (value.contains(needle)) return true;
+    }
+    return false;
+  }
+
+  static GameMapPalette _palette(String id) {
+    switch (id) {
+      case 'frontier':
+        return const GameMapPalette(
+          background: '#221B13',
+          land: '#3A2F20',
+          water: '#31464A',
+          park: '#36402D',
+          building: '#604C34',
+          road: '#B59A70',
+          roadMajor: '#D0B382',
+          roadOutline: '#17110C',
+          label: '#F0DBB7',
+          labelHalo: '#22180F',
+        );
+      case 'neon_coast':
+        return const GameMapPalette(
+          background: '#080611',
+          land: '#100C1C',
+          water: '#071C2D',
+          park: '#102520',
+          building: '#24152E',
+          road: '#3A3151',
+          roadMajor: '#775B98',
+          roadOutline: '#050308',
+          label: '#F6EFFF',
+          labelHalo: '#07040D',
+        );
+      case 'cyber_grid':
+        return const GameMapPalette(
+          background: '#020B0D',
+          land: '#071416',
+          water: '#05212B',
+          park: '#0A231E',
+          building: '#0B2427',
+          road: '#194249',
+          roadMajor: '#2D7279',
+          roadOutline: '#010607',
+          label: '#CFFFF5',
+          labelHalo: '#001214',
+        );
+      case 'midnight':
+        return const GameMapPalette(
+          background: '#08090C',
+          land: '#111216',
+          water: '#0B1825',
+          park: '#111B17',
+          building: '#1C1C24',
+          road: '#292A34',
+          roadMajor: '#48475B',
+          roadOutline: '#030304',
+          label: '#EDEDF3',
+          labelHalo: '#08080A',
+        );
+      case 'classic':
+        return const GameMapPalette(
+          background: '#EDEFF2',
+          land: '#F1F2F3',
+          water: '#B9DDEB',
+          park: '#D4E5D2',
+          building: '#D8D7D4',
+          road: '#FFFFFF',
+          roadMajor: '#F6E7B4',
+          roadOutline: '#C8C8C8',
+          label: '#29313A',
+          labelHalo: '#FFFFFF',
+        );
+      case 'crime_city':
+      default:
+        return const GameMapPalette(
+          background: '#0D1010',
+          land: '#151A18',
+          water: '#0B1D23',
+          park: '#18251B',
+          building: '#242925',
+          road: '#3A403B',
+          roadMajor: '#626A62',
+          roadOutline: '#070908',
+          label: '#F2F0EA',
+          labelHalo: '#0C0E0D',
+        );
+    }
+  }
+}
+
+class GameMapFxOverlay extends StatelessWidget {
+  final GameThemeSpec theme;
+
+  const GameMapFxOverlay({super.key, required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: RepaintBoundary(
+        child: CustomPaint(
+          painter: _GameMapFxPainter(theme),
+          size: Size.infinite,
+        ),
+      ),
+    );
+  }
+}
+
+class _GameMapFxPainter extends CustomPainter {
+  final GameThemeSpec theme;
+
+  const _GameMapFxPainter(this.theme);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+
+    if (theme.id == 'frontier') {
+      canvas.drawRect(
+        rect,
+        Paint()..color = const Color(0x1FCB8F4B),
+      );
+      final linePaint = Paint()
+        ..color = const Color(0x0FF4D7A5)
+        ..strokeWidth = 1;
+      for (double y = 0; y < size.height; y += 38) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y + 10), linePaint);
+      }
+    } else if (theme.id == 'neon_coast' || theme.id == 'cyber_grid') {
+      final scanPaint = Paint()
+        ..color = theme.accent.withValues(alpha: 0.035)
+        ..strokeWidth = 1;
+      for (double y = 0; y < size.height; y += 7) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), scanPaint);
+      }
+      final glow = Paint()
+        ..shader = RadialGradient(
+          colors: [
+            theme.accent.withValues(alpha: 0.06),
+            Colors.transparent,
+          ],
+        ).createShader(
+          Rect.fromCircle(
+            center: Offset(size.width * 0.52, size.height * 0.45),
+            radius: size.longestSide * 0.7,
+          ),
+        );
+      canvas.drawRect(rect, glow);
+    } else if (theme.id == 'crime_city') {
+      canvas.drawRect(
+        rect,
+        Paint()..color = const Color(0x0C6B5848),
+      );
+    }
+
+    if (theme.id != 'classic') {
+      final vignette = Paint()
+        ..shader = RadialGradient(
+          colors: const [Colors.transparent, Color(0x79000000)],
+          stops: const [0.58, 1.0],
+        ).createShader(rect);
+      canvas.drawRect(rect, vignette);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _GameMapFxPainter oldDelegate) {
+    return oldDelegate.theme.id != theme.id;
+  }
+}
+
 class GameThemeSpec {
   final String id;
   final String name;
@@ -264,6 +620,86 @@ class OpenMapServices {
     return parts.join(', ');
   }
 
+  static Future<RoadSnapResult?> nearestRoad(LatLng point) async {
+    final path =
+        '/nearest/v1/driving/${point.longitude},${point.latitude}';
+    final uri = Uri.https('router.project-osrm.org', path, {'number': '1'});
+
+    final response = await http
+        .get(uri, headers: {'User-Agent': _userAgent})
+        .timeout(const Duration(seconds: 8));
+
+    if (response.statusCode != 200) return null;
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) return null;
+    final waypoints = decoded['waypoints'];
+    if (waypoints is! List || waypoints.isEmpty) return null;
+    final waypoint = waypoints.first;
+    if (waypoint is! Map<String, dynamic>) return null;
+    final location = waypoint['location'];
+    if (location is! List || location.length < 2) return null;
+
+    return RoadSnapResult(
+      LatLng(
+        (location[1] as num).toDouble(),
+        (location[0] as num).toDouble(),
+      ),
+      (waypoint['distance'] as num?)?.toDouble() ?? 0,
+    );
+  }
+
+  static Future<List<TrafficSignalInfo>> trafficSignalsNear(
+    LatLng center, {
+    int radiusMeters = 1100,
+  }) async {
+    final query =
+        '[out:json][timeout:10];node(around:$radiusMeters,${center.latitude},${center.longitude})["highway"="traffic_signals"];out body;';
+    final hosts = <String>[
+      'overpass-api.de',
+      'overpass.kumi.systems',
+    ];
+
+    Object? lastError;
+    for (final host in hosts) {
+      try {
+        final uri = Uri.https(host, '/api/interpreter', {'data': query});
+        final response = await http
+            .get(uri, headers: {'User-Agent': _userAgent})
+            .timeout(const Duration(seconds: 12));
+        if (response.statusCode != 200) {
+          lastError = 'Overpass HTTP ${response.statusCode}';
+          continue;
+        }
+
+        final decoded = jsonDecode(response.body);
+        if (decoded is! Map<String, dynamic>) return const [];
+        final elements = decoded['elements'];
+        if (elements is! List) return const [];
+        final signals = <TrafficSignalInfo>[];
+        for (final raw in elements) {
+          if (raw is! Map<String, dynamic>) continue;
+          final lat = raw['lat'];
+          final lon = raw['lon'];
+          if (lat is! num || lon is! num) continue;
+          signals.add(
+            TrafficSignalInfo(
+              id: 'osm:${raw['id']}',
+              point: LatLng(lat.toDouble(), lon.toDouble()),
+            ),
+          );
+          if (signals.length >= 80) break;
+        }
+        return signals;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (lastError != null) {
+      throw Exception('Traffic signal providers failed: $lastError');
+    }
+    return const [];
+  }
+
   static Future<List<RouteResult>> routes(LatLng from, LatLng to) async {
     final path =
         '/route/v1/driving/${from.longitude},${from.latitude};${to.longitude},${to.latitude}';
@@ -319,8 +755,20 @@ class _MapScreenState extends State<MapScreen> {
   MapLibreMapController? _map;
   StreamSubscription<Position>? _positionSub;
   Symbol? _vehicle;
+  Line? _routeGlowLine;
   Line? _routeLine;
+  final List<Circle> _trafficSignalCircles = [];
   Position? _lastPosition;
+  LatLng? _roadSnapPoint;
+  LatLng? _lastRoadSnapRequestPoint;
+  DateTime? _lastRoadSnapAt;
+  bool _roadSnapBusy = false;
+  List<TrafficSignalInfo> _trafficSignals = const [];
+  TrafficSignalInfo? _nextTrafficSignal;
+  double? _distanceToNextTrafficSignal;
+  DateTime? _lastSignalsFetchAt;
+  LatLng? _lastSignalsCenter;
+  bool _signalsBusy = false;
   SearchResult? _destination;
   List<RouteResult> _routeOptions = const [];
   int _selectedRouteIndex = 0;
@@ -333,6 +781,9 @@ class _MapScreenState extends State<MapScreen> {
   DateTime? _lastRerouteAt;
   String? _gpsIssue;
   GameThemeSpec _theme = gameThemes.first;
+  String _resolvedMapStyle = gameThemes.first.mapStyle;
+  int _styleRevision = 0;
+  int _styleBuildToken = 0;
   final List<CommunityReport> _reports = [];
 
   bool avoidTraffic = true;
@@ -350,6 +801,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_prepareThemeStyle(_theme));
     _startLocation();
   }
 
@@ -358,6 +810,26 @@ class _MapScreenState extends State<MapScreen> {
     _positionSub?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _prepareThemeStyle(GameThemeSpec theme) async {
+    final token = ++_styleBuildToken;
+    try {
+      final style = await GameStyleBuilder.build(theme);
+      if (!mounted || token != _styleBuildToken || theme.id != _theme.id) return;
+      setState(() {
+        _resolvedMapStyle = style;
+        _styleRevision++;
+        _styleReady = false;
+        _map = null;
+        _vehicle = null;
+        _routeGlowLine = null;
+        _routeLine = null;
+        _trafficSignalCircles.clear();
+      });
+    } catch (_) {
+      // Keep the provider's base style if custom recoloring cannot be loaded.
+    }
   }
 
   Future<void> _startLocation() async {
@@ -402,15 +874,49 @@ class _MapScreenState extends State<MapScreen> {
     final map = _map;
     if (map == null || !_styleReady) return;
 
-    final point = LatLng(p.latitude, p.longitude);
+    final rawPoint = LatLng(p.latitude, p.longitude);
     final heading = p.heading.isFinite && p.heading >= 0 ? p.heading : 0.0;
+
+    // Keep the visible vehicle on the road instead of drawing the raw GPS fix
+    // over a house, parking lot or courtyard. During active navigation we can
+    // snap locally to the route geometry with no network request. Otherwise we
+    // use OSRM's nearest-road service at a throttled rate.
+    // STRICT ROAD LOCK:
+    // The visible vehicle is NEVER drawn at the raw GPS coordinate. Raw GPS is
+    // used only as an input for map matching. If a fresh road match is not
+    // available, keep the last confirmed road position until a new match
+    // arrives. This prevents the arrow from jumping into houses, courtyards,
+    // fields or parking areas.
+    LatLng? displayPoint;
+    final route = _route;
+    if (route != null && route.geometry.isNotEmpty) {
+      final nearest = _nearestPointOnGeometry(rawPoint, route.geometry);
+      final maxSnapDistance = math.max(65.0, p.accuracy * 2.2);
+      if (nearest.$2 <= maxSnapDistance) {
+        displayPoint = nearest.$1;
+        // Remember every successful route match as the last confirmed road
+        // position. It becomes the safe fallback while a new snap is pending.
+        _roadSnapPoint = displayPoint;
+      }
+    }
+
+    if (displayPoint == null) {
+      // Ask the nearest-road service for a fresh match, but never fall back to
+      // the raw GPS coordinate while waiting.
+      unawaited(_refreshRoadSnapIfNeeded(rawPoint));
+      displayPoint = _roadSnapPoint;
+    }
+
+    // No confirmed road point yet (usually only during the first seconds after
+    // launch): hide/wait rather than showing the vehicle inside a building.
+    if (displayPoint == null) return;
 
     if (_vehicle == null) {
       _vehicle = await map.addSymbol(
         SymbolOptions(
-          geometry: point,
+          geometry: displayPoint,
           iconImage: 'vehicle-marker',
-          iconSize: 0.48,
+          iconSize: 0.56,
           iconRotate: heading,
           iconAnchor: 'center',
         ),
@@ -418,20 +924,16 @@ class _MapScreenState extends State<MapScreen> {
     } else {
       await map.updateSymbol(
         _vehicle!,
-        SymbolOptions(geometry: point, iconRotate: heading),
+        SymbolOptions(geometry: displayPoint, iconRotate: heading),
       );
     }
 
-    // Check whether the driver has actually left the selected route.
-    // We require several consecutive off-route samples so GPS noise does not
-    // trigger a reroute while driving normally.
     unawaited(_maybeReroute(p));
+    unawaited(_refreshTrafficSignalsIfNeeded(displayPoint));
+    _updateNextTrafficSignal(displayPoint);
 
     if (_following) {
       final speedKmh = (p.speed.isFinite ? p.speed : 0) * 3.6;
-      // Keep navigation visually close to the vehicle. City driving is
-      // intentionally tighter; highways zoom out only enough to show the
-      // next stretch of road without making the car feel tiny.
       final zoom = speedKmh > 90
           ? 17.0
           : speedKmh > 60
@@ -447,7 +949,7 @@ class _MapScreenState extends State<MapScreen> {
               : speedKmh > 35
                   ? 45.0
                   : 25.0;
-      final cameraTarget = _pointAhead(point, heading, lookAheadMeters);
+      final cameraTarget = _pointAhead(displayPoint, heading, lookAheadMeters);
       await _animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
@@ -459,6 +961,237 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }
+  }
+
+  Future<void> _refreshRoadSnapIfNeeded(LatLng rawPoint) async {
+    if (_roadSnapBusy) return;
+    final now = DateTime.now();
+    final lastAt = _lastRoadSnapAt;
+    final lastPoint = _lastRoadSnapRequestPoint;
+    if (lastAt != null &&
+        now.difference(lastAt) < const Duration(seconds: 3) &&
+        lastPoint != null &&
+        Geolocator.distanceBetween(
+              rawPoint.latitude,
+              rawPoint.longitude,
+              lastPoint.latitude,
+              lastPoint.longitude,
+            ) <
+            15) {
+      return;
+    }
+
+    _roadSnapBusy = true;
+    _lastRoadSnapAt = now;
+    _lastRoadSnapRequestPoint = rawPoint;
+    try {
+      final snapped = await OpenMapServices.nearestRoad(rawPoint);
+      if (snapped == null) return;
+
+      // Strict road lock prefers a confirmed drivable road over raw GPS.
+      // Reject only clearly implausible matches; for normal residential GPS
+      // drift this still allows the marker to snap out of a building and onto
+      // the nearest road.
+      if (snapped.distanceMeters > 750) return;
+      _roadSnapPoint = snapped.point;
+      if (_lastPosition != null && mounted) {
+        await _onPosition(_lastPosition!);
+      }
+    } catch (_) {
+      // If the snap service is temporarily unavailable, keep the previous road
+      // position and try again after the throttle window.
+    } finally {
+      _roadSnapBusy = false;
+    }
+  }
+
+  (LatLng, double) _nearestPointOnGeometry(
+    LatLng point,
+    List<LatLng> geometry,
+  ) {
+    if (geometry.isEmpty) return (point, double.infinity);
+    if (geometry.length == 1) {
+      return (
+        geometry.first,
+        Geolocator.distanceBetween(
+          point.latitude,
+          point.longitude,
+          geometry.first.latitude,
+          geometry.first.longitude,
+        ),
+      );
+    }
+
+    const earthRadius = 6371000.0;
+    final lat0 = point.latitude * math.pi / 180.0;
+    final cosLat = math.max(0.00001, math.cos(lat0)).toDouble();
+
+    (double, double) xy(LatLng p) {
+      final x = (p.longitude - point.longitude) *
+          math.pi / 180.0 * earthRadius * cosLat;
+      final y = (p.latitude - point.latitude) * math.pi / 180.0 * earthRadius;
+      return (x, y);
+    }
+
+    var bestDistance = double.infinity;
+    var bestX = 0.0;
+    var bestY = 0.0;
+    for (var i = 0; i < geometry.length - 1; i++) {
+      final a = xy(geometry[i]);
+      final b = xy(geometry[i + 1]);
+      final dx = b.$1 - a.$1;
+      final dy = b.$2 - a.$2;
+      final len2 = dx * dx + dy * dy;
+      final t = len2 <= 0.0001
+          ? 0.0
+          : (-(a.$1 * dx + a.$2 * dy) / len2).clamp(0.0, 1.0).toDouble();
+      final nearestX = a.$1 + t * dx;
+      final nearestY = a.$2 + t * dy;
+      final distance = math.sqrt(nearestX * nearestX + nearestY * nearestY);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestX = nearestX;
+        bestY = nearestY;
+      }
+    }
+
+    final snappedLat =
+        point.latitude + (bestY / earthRadius) * 180.0 / math.pi;
+    final snappedLon = point.longitude +
+        (bestX / (earthRadius * cosLat)) * 180.0 / math.pi;
+    return (LatLng(snappedLat, snappedLon), bestDistance);
+  }
+
+  Future<void> _refreshTrafficSignalsIfNeeded(LatLng center) async {
+    if (_signalsBusy) return;
+    final now = DateTime.now();
+    final lastCenter = _lastSignalsCenter;
+    if (_lastSignalsFetchAt != null &&
+        now.difference(_lastSignalsFetchAt!) < const Duration(seconds: 75) &&
+        lastCenter != null &&
+        Geolocator.distanceBetween(
+              center.latitude,
+              center.longitude,
+              lastCenter.latitude,
+              lastCenter.longitude,
+            ) <
+            500) {
+      return;
+    }
+
+    _signalsBusy = true;
+    _lastSignalsFetchAt = now;
+    _lastSignalsCenter = center;
+    try {
+      final signals = await OpenMapServices.trafficSignalsNear(center);
+      if (!mounted) return;
+      _trafficSignals = signals;
+      await _redrawTrafficSignals();
+      _updateNextTrafficSignal(center);
+    } catch (_) {
+      // Signal positions are supplemental; navigation continues if Overpass is
+      // temporarily unavailable.
+    } finally {
+      _signalsBusy = false;
+    }
+  }
+
+  Future<void> _redrawTrafficSignals() async {
+    final map = _map;
+    if (map == null || !_styleReady) return;
+    for (final circle in List<Circle>.from(_trafficSignalCircles)) {
+      try {
+        await map.removeCircle(circle);
+      } catch (_) {}
+    }
+    _trafficSignalCircles.clear();
+
+    for (final signal in _trafficSignals.take(60)) {
+      try {
+        final circle = await map.addCircle(
+          CircleOptions(
+            geometry: signal.point,
+            circleRadius: 5.5,
+            circleColor: '#F5B642',
+            circleStrokeColor: '#15110A',
+            circleStrokeWidth: 2.0,
+            circleOpacity: 0.95,
+          ),
+        );
+        _trafficSignalCircles.add(circle);
+      } catch (_) {}
+    }
+  }
+
+  void _updateNextTrafficSignal(LatLng vehiclePoint) {
+    final route = _route;
+    if (route == null || route.geometry.isEmpty || _trafficSignals.isEmpty) {
+      if (_nextTrafficSignal != null || _distanceToNextTrafficSignal != null) {
+        if (mounted) {
+          setState(() {
+            _nextTrafficSignal = null;
+            _distanceToNextTrafficSignal = null;
+          });
+        }
+      }
+      return;
+    }
+
+    final currentIndex = _nearestRouteVertexIndex(vehiclePoint, route.geometry);
+    TrafficSignalInfo? best;
+    double bestDistance = double.infinity;
+    var bestRouteIndex = 1 << 30;
+
+    for (final signal in _trafficSignals) {
+      final distance = Geolocator.distanceBetween(
+        vehiclePoint.latitude,
+        vehiclePoint.longitude,
+        signal.point.latitude,
+        signal.point.longitude,
+      );
+      if (distance > 550) continue;
+      final snap = _nearestPointOnGeometry(signal.point, route.geometry);
+      if (snap.$2 > 32) continue;
+      final routeIndex = _nearestRouteVertexIndex(signal.point, route.geometry);
+      if (routeIndex + 2 < currentIndex) continue;
+      if (routeIndex < bestRouteIndex ||
+          (routeIndex == bestRouteIndex && distance < bestDistance)) {
+        best = signal;
+        bestDistance = distance;
+        bestRouteIndex = routeIndex;
+      }
+    }
+
+    final changedId = best?.id != _nextTrafficSignal?.id;
+    final changedDistance = (_distanceToNextTrafficSignal == null && best != null) ||
+        (_distanceToNextTrafficSignal != null &&
+            best != null &&
+            (bestDistance - _distanceToNextTrafficSignal!).abs() >= 8) ||
+        (best == null && _distanceToNextTrafficSignal != null);
+    if ((changedId || changedDistance) && mounted) {
+      setState(() {
+        _nextTrafficSignal = best;
+        _distanceToNextTrafficSignal = best == null ? null : bestDistance;
+      });
+    }
+  }
+
+  int _nearestRouteVertexIndex(LatLng point, List<LatLng> geometry) {
+    var bestIndex = 0;
+    var bestDistance = double.infinity;
+    for (var i = 0; i < geometry.length; i++) {
+      final d = Geolocator.distanceBetween(
+        point.latitude,
+        point.longitude,
+        geometry[i].latitude,
+        geometry[i].longitude,
+      );
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestIndex = i;
+      }
+    }
+    return bestIndex;
   }
 
   LatLng _pointAhead(LatLng from, double bearingDegrees, double meters) {
@@ -504,50 +1237,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   double _distanceToRouteMeters(LatLng point, List<LatLng> geometry) {
-    if (geometry.isEmpty) return double.infinity;
-    if (geometry.length == 1) {
-      return Geolocator.distanceBetween(
-        point.latitude,
-        point.longitude,
-        geometry.first.latitude,
-        geometry.first.longitude,
-      );
-    }
-
-    const earthRadius = 6371000.0;
-    final lat0 = point.latitude * math.pi / 180.0;
-    final cosLat = math.cos(lat0);
-
-    (double, double) xy(LatLng p) {
-      final x = (p.longitude - point.longitude) *
-          math.pi / 180.0 * earthRadius * cosLat;
-      final y = (p.latitude - point.latitude) *
-          math.pi / 180.0 * earthRadius;
-      return (x, y);
-    }
-
-    var best = double.infinity;
-    for (var i = 0; i < geometry.length - 1; i++) {
-      final a = xy(geometry[i]);
-      final b = xy(geometry[i + 1]);
-      final dx = b.$1 - a.$1;
-      final dy = b.$2 - a.$2;
-      final len2 = dx * dx + dy * dy;
-
-      double t;
-      if (len2 <= 0.0001) {
-        t = 0;
-      } else {
-        // Projection of the origin (the live GPS position) onto segment AB.
-        t = (-(a.$1 * dx + a.$2 * dy) / len2).clamp(0.0, 1.0).toDouble();
-      }
-
-      final nearestX = a.$1 + t * dx;
-      final nearestY = a.$2 + t * dy;
-      final d = math.sqrt(nearestX * nearestX + nearestY * nearestY);
-      if (d < best) best = d;
-    }
-    return best;
+    return _nearestPointOnGeometry(point, geometry).$2;
   }
 
   Future<void> _maybeReroute(Position p) async {
@@ -638,6 +1328,7 @@ class _MapScreenState extends State<MapScreen> {
       bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
     );
     await _redrawRoute();
+    await _redrawTrafficSignals();
     if (_lastPosition != null) await _onPosition(_lastPosition!);
   }
 
@@ -646,6 +1337,12 @@ class _MapScreenState extends State<MapScreen> {
     final route = _route;
     if (map == null || !_styleReady || route == null) return;
 
+    if (_routeGlowLine != null) {
+      try {
+        await map.removeLine(_routeGlowLine!);
+      } catch (_) {}
+      _routeGlowLine = null;
+    }
     if (_routeLine != null) {
       try {
         await map.removeLine(_routeLine!);
@@ -653,12 +1350,22 @@ class _MapScreenState extends State<MapScreen> {
       _routeLine = null;
     }
 
+    _routeGlowLine = await map.addLine(
+      LineOptions(
+        geometry: route.geometry,
+        lineColor: _theme.routeColor,
+        lineWidth: 15,
+        lineOpacity: 0.22,
+        lineBlur: 3.0,
+        lineJoin: 'round',
+      ),
+    );
     _routeLine = await map.addLine(
       LineOptions(
         geometry: route.geometry,
         lineColor: _theme.routeColor,
         lineWidth: 7,
-        lineOpacity: 0.94,
+        lineOpacity: 0.98,
         lineJoin: 'round',
       ),
     );
@@ -747,6 +1454,7 @@ class _MapScreenState extends State<MapScreen> {
         _following = false;
         _offRouteSamples = 0;
       });
+      _searchController.clear();
 
       await _redrawRoute();
 
@@ -781,14 +1489,19 @@ class _MapScreenState extends State<MapScreen> {
 
   void _changeTheme(GameThemeSpec theme) {
     if (theme.id == _theme.id) return;
+    Navigator.pop(context);
     setState(() {
       _theme = theme;
+      _resolvedMapStyle = theme.mapStyle;
+      _styleRevision++;
       _styleReady = false;
       _map = null;
       _vehicle = null;
+      _routeGlowLine = null;
       _routeLine = null;
+      _trafficSignalCircles.clear();
     });
-    Navigator.pop(context);
+    unawaited(_prepareThemeStyle(theme));
   }
 
   void _showThemeSheet() {
@@ -1057,8 +1770,8 @@ class _MapScreenState extends State<MapScreen> {
         body: Stack(
           children: [
             MapLibreMap(
-              key: ValueKey(_theme.id),
-              styleString: _theme.mapStyle,
+              key: ValueKey('${_theme.id}:$_styleRevision'),
+              styleString: _resolvedMapStyle,
               initialCameraPosition: CameraPosition(
                 target: initialTarget,
                 zoom: _lastPosition == null ? 9 : 16,
@@ -1066,7 +1779,9 @@ class _MapScreenState extends State<MapScreen> {
               onMapCreated: (c) => _map = c,
               onStyleLoadedCallback: _onStyleLoaded,
               onCameraMove: _handleCameraMove,
+              compassEnabled: false,
             ),
+            Positioned.fill(child: GameMapFxOverlay(theme: _theme)),
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(12),
@@ -1174,30 +1889,60 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                       ),
                     ],
-                    if (_destination != null) ...[
+                    if (_routeOptions.length > 1) ...[
                       const SizedBox(height: 8),
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: _theme.panel,
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(Icons.flag, color: _theme.accent),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _destination!.name,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
+                      _routeAlternatives(),
+                    ],
+                    if (_nextTrafficSignal != null &&
+                        _distanceToNextTrafficSignal != null &&
+                        _distanceToNextTrafficSignal! <= 320) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.center,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: _theme.panel,
+                            borderRadius: BorderRadius.circular(15),
+                            border: Border.all(
+                              color: const Color(0x99F5B642),
+                              width: 1.2,
                             ),
-                          ],
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.traffic,
+                                  color: Color(0xFFF5B642),
+                                  size: 20,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'רמזור • ${_distanceToNextTrafficSignal!.round()} מ׳',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                                if (_nextTrafficSignal!.remainingSeconds != null) ...[
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    '${_nextTrafficSignal!.remainingSeconds} שנ׳',
+                                    style: TextStyle(
+                                      color: _theme.accent,
+                                      fontWeight: FontWeight.w900,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      _routeAlternatives(),
                     ],
                     const Spacer(),
                     Row(
