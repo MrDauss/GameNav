@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  maplibre_gl: ^0.27.0
+  maplibre_gl: 0.26.2
   geolocator: ^14.0.3
   http: ^1.5.0
 
