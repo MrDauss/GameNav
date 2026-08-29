@@ -1,0 +1,39 @@
+name: Build GameNav APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Create Android project
+        run: flutter create --platforms=android --org=com.gamenav .
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Apply Android permissions
+        run: |
+          cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameNav-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
