@@ -429,12 +429,29 @@ class _MapScreenState extends State<MapScreen> {
 
     if (_following) {
       final speedKmh = (p.speed.isFinite ? p.speed : 0) * 3.6;
-      final zoom = speedKmh > 80 ? 15.2 : speedKmh > 45 ? 16.0 : 17.0;
-      final tilt = speedKmh > 30 ? 52.0 : 44.0;
+      // Keep navigation visually close to the vehicle. City driving is
+      // intentionally tighter; highways zoom out only enough to show the
+      // next stretch of road without making the car feel tiny.
+      final zoom = speedKmh > 90
+          ? 17.0
+          : speedKmh > 60
+              ? 17.5
+              : speedKmh > 35
+                  ? 18.0
+                  : 18.5;
+      final tilt = speedKmh > 35 ? 58.0 : 52.0;
+      final lookAheadMeters = speedKmh > 90
+          ? 90.0
+          : speedKmh > 60
+              ? 70.0
+              : speedKmh > 35
+                  ? 45.0
+                  : 25.0;
+      final cameraTarget = _pointAhead(point, heading, lookAheadMeters);
       await _animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
-            target: point,
+            target: cameraTarget,
             zoom: zoom,
             bearing: heading,
             tilt: tilt,
@@ -442,6 +459,28 @@ class _MapScreenState extends State<MapScreen> {
         ),
       );
     }
+  }
+
+  LatLng _pointAhead(LatLng from, double bearingDegrees, double meters) {
+    if (!bearingDegrees.isFinite || meters <= 0) return from;
+
+    const earthRadius = 6371000.0;
+    final angularDistance = meters / earthRadius;
+    final bearing = bearingDegrees * math.pi / 180.0;
+    final lat1 = from.latitude * math.pi / 180.0;
+    final lon1 = from.longitude * math.pi / 180.0;
+
+    final lat2 = math.asin(
+      math.sin(lat1) * math.cos(angularDistance) +
+          math.cos(lat1) * math.sin(angularDistance) * math.cos(bearing),
+    );
+    final lon2 = lon1 +
+        math.atan2(
+          math.sin(bearing) * math.sin(angularDistance) * math.cos(lat1),
+          math.cos(angularDistance) - math.sin(lat1) * math.sin(lat2),
+        );
+
+    return LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
   }
 
   Future<void> _animateCamera(CameraUpdate update) async {
@@ -657,7 +696,6 @@ class _MapScreenState extends State<MapScreen> {
                     'תוצאות חיפוש',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  subtitle: const Text('Photon + OpenStreetMap fallback'),
                 ),
                 ...results.map(
                   (r) => ListTile(
@@ -711,11 +749,10 @@ class _MapScreenState extends State<MapScreen> {
       });
 
       await _redrawRoute();
-      await _fitSelectedRoute();
 
-      // Show a short route overview, then automatically enter navigation
-      // mode and keep the camera on the live vehicle position.
-      await Future<void>.delayed(const Duration(milliseconds: 900));
+      // Enter navigation view immediately. The full-route overview was
+      // intentionally removed because it made the live view feel distant
+      // and forced the driver to wait before the camera followed the car.
       if (mounted && identical(_destination, destination)) {
         setState(() => _following = true);
         if (_lastPosition != null) await _onPosition(_lastPosition!);
@@ -729,38 +766,6 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
-  Future<void> _fitSelectedRoute() async {
-    final map = _map;
-    final route = _route;
-    if (map == null || route == null || route.geometry.isEmpty) return;
-
-    final minLat = route.geometry
-        .map((e) => e.latitude)
-        .reduce((a, b) => a < b ? a : b);
-    final maxLat = route.geometry
-        .map((e) => e.latitude)
-        .reduce((a, b) => a > b ? a : b);
-    final minLon = route.geometry
-        .map((e) => e.longitude)
-        .reduce((a, b) => a < b ? a : b);
-    final maxLon = route.geometry
-        .map((e) => e.longitude)
-        .reduce((a, b) => a > b ? a : b);
-
-    await _animateCamera(
-      CameraUpdate.newLatLngBounds(
-        LatLngBounds(
-          southwest: LatLng(minLat, minLon),
-          northeast: LatLng(maxLat, maxLon),
-        ),
-        left: 50,
-        top: 190,
-        right: 50,
-        bottom: 230,
-      ),
-    );
-  }
-
   Future<void> _selectRoute(int index) async {
     if (index < 0 || index >= _routeOptions.length) return;
     setState(() {
@@ -769,8 +774,6 @@ class _MapScreenState extends State<MapScreen> {
       _offRouteSamples = 0;
     });
     await _redrawRoute();
-    await _fitSelectedRoute();
-    await Future<void>.delayed(const Duration(milliseconds: 700));
     if (!mounted) return;
     setState(() => _following = true);
     if (_lastPosition != null) await _onPosition(_lastPosition!);
