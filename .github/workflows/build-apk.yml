@@ -30,7 +30,7 @@ jobs:
         run: java -version
 
       - name: Create Android project
-        run: flutter create --platforms=android --org=com.gamenav .
+        run: flutter create --platforms=android --org=com.gamenav --project-name gamenav .
 
       - name: Remove generated Flutter test
         run: |
