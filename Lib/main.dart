@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -326,8 +326,12 @@ class _MapScreenState extends State<MapScreen> {
   int _selectedRouteIndex = 0;
   bool _styleReady = false;
   bool _following = true;
+  bool _programmaticCameraMove = false;
   bool _busy = false;
-  String _status = 'מאתר GPS…';
+  bool _rerouting = false;
+  int _offRouteSamples = 0;
+  DateTime? _lastRerouteAt;
+  String? _gpsIssue;
   GameThemeSpec _theme = gameThemes.first;
   final List<CommunityReport> _reports = [];
 
@@ -358,7 +362,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _startLocation() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
-      if (mounted) setState(() => _status = 'יש להפעיל שירותי מיקום');
+      if (mounted) setState(() => _gpsIssue = 'יש להפעיל שירותי מיקום');
       return;
     }
 
@@ -369,7 +373,7 @@ class _MapScreenState extends State<MapScreen> {
 
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
-      if (mounted) setState(() => _status = 'אין הרשאת GPS');
+      if (mounted) setState(() => _gpsIssue = 'אין הרשאת GPS');
       return;
     }
 
@@ -391,12 +395,8 @@ class _MapScreenState extends State<MapScreen> {
   Future<void> _onPosition(Position p) async {
     _lastPosition = p;
 
-    if (mounted) {
-      final kmh = (p.speed.isFinite ? p.speed : 0) * 3.6;
-      setState(() {
-        _status =
-            '${kmh.clamp(0, 999).toStringAsFixed(0)} קמ״ש  •  GPS ±${p.accuracy.toStringAsFixed(0)} מ׳';
-      });
+    if (mounted && _gpsIssue != null) {
+      setState(() => _gpsIssue = null);
     }
 
     final map = _map;
@@ -422,11 +422,16 @@ class _MapScreenState extends State<MapScreen> {
       );
     }
 
+    // Check whether the driver has actually left the selected route.
+    // We require several consecutive off-route samples so GPS noise does not
+    // trigger a reroute while driving normally.
+    unawaited(_maybeReroute(p));
+
     if (_following) {
       final speedKmh = (p.speed.isFinite ? p.speed : 0) * 3.6;
       final zoom = speedKmh > 80 ? 15.2 : speedKmh > 45 ? 16.0 : 17.0;
       final tilt = speedKmh > 30 ? 52.0 : 44.0;
-      await map.animateCamera(
+      await _animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
             target: point,
@@ -439,10 +444,160 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _animateCamera(CameraUpdate update) async {
+    final map = _map;
+    if (map == null) return;
+
+    _programmaticCameraMove = true;
+    try {
+      await map.animateCamera(update);
+    } finally {
+      // Give MapLibre's final camera callback a moment to arrive before we
+      // treat subsequent moves as a user gesture.
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      _programmaticCameraMove = false;
+    }
+  }
+
+  void _handleCameraMove(CameraPosition _) {
+    if (!mounted || _programmaticCameraMove || !_following) return;
+    setState(() => _following = false);
+  }
+
+  double _distanceToRouteMeters(LatLng point, List<LatLng> geometry) {
+    if (geometry.isEmpty) return double.infinity;
+    if (geometry.length == 1) {
+      return Geolocator.distanceBetween(
+        point.latitude,
+        point.longitude,
+        geometry.first.latitude,
+        geometry.first.longitude,
+      );
+    }
+
+    const earthRadius = 6371000.0;
+    final lat0 = point.latitude * math.pi / 180.0;
+    final cosLat = math.cos(lat0);
+
+    (double, double) xy(LatLng p) {
+      final x = (p.longitude - point.longitude) *
+          math.pi / 180.0 * earthRadius * cosLat;
+      final y = (p.latitude - point.latitude) *
+          math.pi / 180.0 * earthRadius;
+      return (x, y);
+    }
+
+    var best = double.infinity;
+    for (var i = 0; i < geometry.length - 1; i++) {
+      final a = xy(geometry[i]);
+      final b = xy(geometry[i + 1]);
+      final dx = b.$1 - a.$1;
+      final dy = b.$2 - a.$2;
+      final len2 = dx * dx + dy * dy;
+
+      double t;
+      if (len2 <= 0.0001) {
+        t = 0;
+      } else {
+        // Projection of the origin (the live GPS position) onto segment AB.
+        t = (-(a.$1 * dx + a.$2 * dy) / len2).clamp(0.0, 1.0).toDouble();
+      }
+
+      final nearestX = a.$1 + t * dx;
+      final nearestY = a.$2 + t * dy;
+      final d = math.sqrt(nearestX * nearestX + nearestY * nearestY);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  Future<void> _maybeReroute(Position p) async {
+    final route = _route;
+    final destination = _destination;
+    if (route == null || destination == null || _rerouting) return;
+
+    // Very inaccurate fixes are ignored so a bad GPS sample cannot cause a
+    // false reroute.
+    if (!p.accuracy.isFinite || p.accuracy > 80) return;
+
+    final distanceToDestination = Geolocator.distanceBetween(
+      p.latitude,
+      p.longitude,
+      destination.lat,
+      destination.lon,
+    );
+    if (distanceToDestination < 60) {
+      _offRouteSamples = 0;
+      return;
+    }
+
+    final distance = _distanceToRouteMeters(
+      LatLng(p.latitude, p.longitude),
+      route.geometry,
+    );
+    final threshold = math.max(35.0, p.accuracy * 1.8);
+
+    if (distance > threshold) {
+      _offRouteSamples++;
+    } else if (distance < threshold * 0.65) {
+      _offRouteSamples = 0;
+    }
+
+    if (_offRouteSamples < 3) return;
+
+    final now = DateTime.now();
+    if (_lastRerouteAt != null &&
+        now.difference(_lastRerouteAt!) < const Duration(seconds: 10)) {
+      return;
+    }
+
+    _offRouteSamples = 0;
+    _lastRerouteAt = now;
+    if (mounted) {
+      setState(() => _rerouting = true);
+    } else {
+      _rerouting = true;
+    }
+
+    try {
+      final routes = await OpenMapServices.routes(
+        LatLng(p.latitude, p.longitude),
+        LatLng(destination.lat, destination.lon),
+      );
+      if (!mounted || routes.isEmpty) return;
+
+      setState(() {
+        _routeOptions = routes;
+        _selectedRouteIndex = 0;
+        _following = true;
+      });
+      await _redrawRoute();
+
+      // Return immediately to navigation view instead of showing another
+      // high route overview every time the driver misses a turn.
+      if (_lastPosition != null) {
+        await _onPosition(_lastPosition!);
+      }
+      _message('המסלול עודכן לפי המיקום החדש');
+    } catch (_) {
+      // Keep the old route on screen and retry after new GPS samples.
+      _message('לא הצלחתי לחשב מסלול מחדש כרגע');
+    } finally {
+      if (mounted) {
+        setState(() => _rerouting = false);
+      } else {
+        _rerouting = false;
+      }
+    }
+  }
+
   Future<void> _onStyleLoaded() async {
     _styleReady = true;
     final bytes = await rootBundle.load('assets/icons/vehicle.png');
-    await _map?.addImage('vehicle-marker', Uint8List.view(bytes.buffer));
+    await _map?.addImage(
+      'vehicle-marker',
+      bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+    );
     await _redrawRoute();
     if (_lastPosition != null) await _onPosition(_lastPosition!);
   }
@@ -552,10 +707,19 @@ class _MapScreenState extends State<MapScreen> {
         _routeOptions = routes;
         _selectedRouteIndex = 0;
         _following = false;
+        _offRouteSamples = 0;
       });
 
       await _redrawRoute();
       await _fitSelectedRoute();
+
+      // Show a short route overview, then automatically enter navigation
+      // mode and keep the camera on the live vehicle position.
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (mounted && identical(_destination, destination)) {
+        setState(() => _following = true);
+        if (_lastPosition != null) await _onPosition(_lastPosition!);
+      }
     } on TimeoutException {
       _message('חישוב המסלול ארך יותר מדי זמן. נסה שוב.');
     } catch (_) {
@@ -583,7 +747,7 @@ class _MapScreenState extends State<MapScreen> {
         .map((e) => e.longitude)
         .reduce((a, b) => a > b ? a : b);
 
-    await map.animateCamera(
+    await _animateCamera(
       CameraUpdate.newLatLngBounds(
         LatLngBounds(
           southwest: LatLng(minLat, minLon),
@@ -599,9 +763,17 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _selectRoute(int index) async {
     if (index < 0 || index >= _routeOptions.length) return;
-    setState(() => _selectedRouteIndex = index);
+    setState(() {
+      _selectedRouteIndex = index;
+      _following = false;
+      _offRouteSamples = 0;
+    });
     await _redrawRoute();
     await _fitSelectedRoute();
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    setState(() => _following = true);
+    if (_lastPosition != null) await _onPosition(_lastPosition!);
   }
 
   void _changeTheme(GameThemeSpec theme) {
@@ -620,15 +792,19 @@ class _MapScreenState extends State<MapScreen> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       backgroundColor: _theme.panel,
-      builder: (context) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 0, 14, 22),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.62,
+        minChildSize: 0.35,
+        maxChildSize: 0.92,
+        builder: (context, scrollController) => Directionality(
+          textDirection: TextDirection.rtl,
+          child: SafeArea(
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
               children: [
                 const Text(
                   'Game Themes',
@@ -636,7 +812,7 @@ class _MapScreenState extends State<MapScreen> {
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  'Themes מקוריים בהשראת ז׳אנרים מוכרים של משחקי נהיגה ועולם פתוח.',
+                  'גלול למעלה ולמטה ובחר את עולם המשחק של הניווט.',
                 ),
                 const SizedBox(height: 14),
                 ...gameThemes.map(
@@ -693,11 +869,12 @@ class _MapScreenState extends State<MapScreen> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       backgroundColor: _theme.panel,
       builder: (context) => Directionality(
         textDirection: TextDirection.rtl,
         child: SafeArea(
-          child: Padding(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -816,7 +993,7 @@ class _MapScreenState extends State<MapScreen> {
     ValueChanged<bool> onChanged,
   ) {
     return SwitchListTile(
-      activeColor: _theme.accent,
+      activeThumbColor: _theme.accent,
       title: Text(title),
       value: value,
       onChanged: onChanged,
@@ -835,65 +1012,6 @@ class _MapScreenState extends State<MapScreen> {
       SnackBar(
         content: Text(text),
         backgroundColor: _theme.panel,
-      ),
-    );
-  }
-
-  Widget _gameHud() {
-    final route = _route;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: _theme.panel,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _theme.accent.withOpacity(0.65)),
-        boxShadow: const [
-          BoxShadow(color: Colors.black45, blurRadius: 16, offset: Offset(0, 6)),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: _theme.accent,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(_theme.icon, color: Colors.black),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _theme.name.toUpperCase(),
-                  style: TextStyle(
-                    color: _theme.accent,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.2,
-                  ),
-                ),
-                Text(
-                  route == null ? _status : _routeSummary(route),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: _theme.foreground),
-                ),
-              ],
-            ),
-          ),
-          if (_routeOptions.length > 1)
-            Text(
-              '${_selectedRouteIndex + 1}/${_routeOptions.length}',
-              style: TextStyle(
-                color: _theme.accent,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-        ],
       ),
     );
   }
@@ -944,7 +1062,7 @@ class _MapScreenState extends State<MapScreen> {
               ),
               onMapCreated: (c) => _map = c,
               onStyleLoadedCallback: _onStyleLoaded,
-              onCameraMove: (_) => _following = false,
+              onCameraMove: _handleCameraMove,
             ),
             SafeArea(
               child: Padding(
@@ -963,7 +1081,7 @@ class _MapScreenState extends State<MapScreen> {
                         decoration: InputDecoration(
                           hintText: 'לאן נוסעים?',
                           hintStyle: TextStyle(
-                            color: _theme.foreground.withOpacity(0.65),
+                            color: _theme.foreground.withValues(alpha: 0.65),
                           ),
                           prefixIcon: Icon(Icons.search, color: _theme.accent),
                           suffixIcon: _busy
@@ -990,8 +1108,69 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                       ),
                     ),
-                    const SizedBox(height: 8),
-                    _gameHud(),
+                    if (_gpsIssue != null) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.center,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: _theme.panel,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 7,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.gps_off,
+                                  size: 16,
+                                  color: _theme.accent,
+                                ),
+                                const SizedBox(width: 8),
+                                Text(_gpsIssue!),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                    if (_rerouting) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.center,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: _theme.panel,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 7,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: _theme.accent,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                const Text('מחשב מסלול מחדש…'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                     if (_destination != null) ...[
                       const SizedBox(height: 8),
                       Container(
