@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout GameNav
         uses: actions/checkout@v4
 
       - name: Setup Java 21
@@ -26,22 +26,47 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Check Java
-        run: java -version
-
-      - name: Create Android project
-        run: flutter create --platforms=android --org=com.gamenav --project-name gamenav .
-
-      - name: Remove generated Flutter test
+      - name: Check Java and Flutter
         run: |
-          rm -rf test
-          echo "Generated Flutter test removed"
+          java -version
+          flutter --version
+
+      # IMPORTANT: Create the Android shell OUTSIDE the repository.
+      # This prevents `flutter create` from replacing lib/main.dart
+      # with Flutter's default counter demo.
+      - name: Generate Android shell safely
+        run: |
+          rm -rf /tmp/gamenav_android_shell
+          flutter create \
+            --platforms=android \
+            --org=com.gamenav \
+            --project-name=gamenav \
+            /tmp/gamenav_android_shell
+
+          rm -rf android
+          cp -R /tmp/gamenav_android_shell/android ./android
+          cp /tmp/gamenav_android_shell/.metadata ./.metadata
+
+      - name: Verify GameNav source was not overwritten
+        run: |
+          test -f lib/main.dart
+          grep -q "class GameNavApp" lib/main.dart || {
+            echo "ERROR: lib/main.dart is not the GameNav source. Refusing to build Flutter demo app."
+            exit 1
+          }
+          grep -q "runApp(const GameNavApp())" lib/main.dart || {
+            echo "ERROR: GameNav entry point is missing."
+            exit 1
+          }
+          echo "GameNav source verified."
 
       - name: Get dependencies
         run: flutter pub get
 
       - name: Apply Android permissions
-        run: cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+        run: |
+          test -f platform_overrides/AndroidManifest.xml
+          cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
@@ -49,9 +74,14 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
+      - name: Verify APK
+        run: |
+          test -f build/app/outputs/flutter-apk/app-release.apk
+          ls -lh build/app/outputs/flutter-apk/app-release.apk
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: GameNav-APK-v0.4
+          name: GameNav-APK-v0.4.2
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
