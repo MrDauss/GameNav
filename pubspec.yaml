@@ -1,7 +1,7 @@
 name: gamenav
 description: Game-style GPS navigation prototype
 publish_to: 'none'
-version: 0.4.6+6
+version: 0.4.6+7
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -13,7 +13,7 @@ dependencies:
   geolocator: ^14.0.3
   http: ^1.5.0
   flutter_compass: 0.8.1
-  wakelock_plus: 1.4.0
+  wakelock_plus: ^1.7.0
 
 dev_dependencies:
   flutter_test:
