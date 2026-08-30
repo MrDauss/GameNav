@@ -3,10 +3,12 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -111,7 +113,11 @@ class GameMapPalette {
 }
 
 class GameStyleBuilder {
+  static final Map<String, String> _cache = <String, String>{};
+
   static Future<String> build(GameThemeSpec theme) async {
+    final cached = _cache[theme.id];
+    if (cached != null) return cached;
     final response = await http
         .get(
           Uri.parse(theme.mapStyle),
@@ -227,7 +233,9 @@ class GameStyleBuilder {
       }
     }
 
-    return jsonEncode(decoded);
+    final result = jsonEncode(decoded);
+    _cache[theme.id] = result;
+    return result;
   }
 
   static bool _containsAny(String value, List<String> needles) {
@@ -750,16 +758,26 @@ class MapScreen extends StatefulWidget {
   State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapScreenState extends State<MapScreen> {
+class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final _searchController = TextEditingController();
   MapLibreMapController? _map;
   StreamSubscription<Position>? _positionSub;
+  StreamSubscription<CompassEvent>? _compassSub;
+  Timer? _renderTimer;
   Symbol? _vehicle;
   Line? _routeGlowLine;
   Line? _routeLine;
   final List<Circle> _trafficSignalCircles = [];
   Position? _lastPosition;
   LatLng? _roadSnapPoint;
+  LatLng? _targetDisplayPoint;
+  LatLng? _renderedDisplayPoint;
+  double? _deviceHeading;
+  double _targetHeading = 0;
+  double _renderedHeading = 0;
+  double _lastSpeedMps = 0;
+  bool _renderTickBusy = false;
+  DateTime? _lastCameraFrameAt;
   LatLng? _lastRoadSnapRequestPoint;
   DateTime? _lastRoadSnapAt;
   bool _roadSnapBusy = false;
@@ -773,6 +791,8 @@ class _MapScreenState extends State<MapScreen> {
   List<RouteResult> _routeOptions = const [];
   int _selectedRouteIndex = 0;
   bool _styleReady = false;
+  bool _mapStylePrepared = false;
+  bool _mapVisible = false;
   bool _following = true;
   bool _programmaticCameraMove = false;
   bool _busy = false;
@@ -801,35 +821,86 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    unawaited(WakelockPlus.enable());
+    _startCompass();
+    _renderTimer = Timer.periodic(
+      const Duration(milliseconds: 100),
+      (_) => unawaited(_renderFrame()),
+    );
     unawaited(_prepareThemeStyle(_theme));
     _startLocation();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(WakelockPlus.enable());
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.detached) {
+      unawaited(WakelockPlus.disable());
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _positionSub?.cancel();
+    _compassSub?.cancel();
+    _renderTimer?.cancel();
+    unawaited(WakelockPlus.disable());
     _searchController.dispose();
     super.dispose();
   }
 
+  void _startCompass() {
+    final events = FlutterCompass.events;
+    if (events == null) return;
+    _compassSub = events.listen((event) {
+      final heading = event.heading;
+      if (heading == null || !heading.isFinite) return;
+      _deviceHeading = _normalizeHeading(heading);
+
+      // When standing still or moving slowly, GPS course is noisy or missing.
+      // In that state the arrow follows the physical orientation of the phone.
+      if (_lastSpeedMps < 2.8) {
+        _targetHeading = _deviceHeading!;
+      }
+    });
+  }
+
   Future<void> _prepareThemeStyle(GameThemeSpec theme) async {
     final token = ++_styleBuildToken;
-    try {
-      final style = await GameStyleBuilder.build(theme);
-      if (!mounted || token != _styleBuildToken || theme.id != _theme.id) return;
+    if (mounted) {
       setState(() {
-        _resolvedMapStyle = style;
-        _styleRevision++;
+        _mapStylePrepared = false;
+        _mapVisible = false;
         _styleReady = false;
-        _map = null;
-        _vehicle = null;
-        _routeGlowLine = null;
-        _routeLine = null;
-        _trafficSignalCircles.clear();
       });
-    } catch (_) {
-      // Keep the provider's base style if custom recoloring cannot be loaded.
     }
+
+    String resolvedStyle;
+    try {
+      resolvedStyle = await GameStyleBuilder.build(theme);
+    } catch (_) {
+      resolvedStyle = theme.mapStyle;
+    }
+
+    if (!mounted || token != _styleBuildToken || theme.id != _theme.id) return;
+    setState(() {
+      _resolvedMapStyle = resolvedStyle;
+      _mapStylePrepared = true;
+      _styleRevision++;
+      _styleReady = false;
+      _mapVisible = false;
+      _map = null;
+      _vehicle = null;
+      _renderedDisplayPoint = null;
+      _routeGlowLine = null;
+      _routeLine = null;
+      _trafficSignalCircles.clear();
+    });
   }
 
   Future<void> _startLocation() async {
@@ -851,7 +922,7 @@ class _MapScreenState extends State<MapScreen> {
 
     const settings = LocationSettings(
       accuracy: LocationAccuracy.bestForNavigation,
-      distanceFilter: 3,
+      distanceFilter: 0,
     );
 
     _positionSub = Geolocator.getPositionStream(locationSettings: settings)
@@ -866,6 +937,7 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _onPosition(Position p) async {
     _lastPosition = p;
+    _lastSpeedMps = p.speed.isFinite && p.speed > 0 ? p.speed : 0;
 
     if (mounted && _gpsIssue != null) {
       setState(() => _gpsIssue = null);
@@ -875,91 +947,170 @@ class _MapScreenState extends State<MapScreen> {
     if (map == null || !_styleReady) return;
 
     final rawPoint = LatLng(p.latitude, p.longitude);
-    final heading = p.heading.isFinite && p.heading >= 0 ? p.heading : 0.0;
+    _targetHeading = _preferredHeading(p);
 
-    // Keep the visible vehicle on the road instead of drawing the raw GPS fix
-    // over a house, parking lot or courtyard. During active navigation we can
-    // snap locally to the route geometry with no network request. Otherwise we
-    // use OSRM's nearest-road service at a throttled rate.
-    // STRICT ROAD LOCK:
-    // The visible vehicle is NEVER drawn at the raw GPS coordinate. Raw GPS is
-    // used only as an input for map matching. If a fresh road match is not
-    // available, keep the last confirmed road position until a new match
-    // arrives. This prevents the arrow from jumping into houses, courtyards,
-    // fields or parking areas.
+    // STRICT ROAD LOCK. The raw GPS point is never drawn. During navigation
+    // use the route geometry as the primary map-matching surface. If that
+    // cannot produce a plausible point, keep the last confirmed road point
+    // while a fresh nearest-road match is requested.
     LatLng? displayPoint;
     final route = _route;
     if (route != null && route.geometry.isNotEmpty) {
       final nearest = _nearestPointOnGeometry(rawPoint, route.geometry);
-      final maxSnapDistance = math.max(65.0, p.accuracy * 2.2);
+      final maxSnapDistance = math.max(90.0, p.accuracy * 2.8);
       if (nearest.$2 <= maxSnapDistance) {
         displayPoint = nearest.$1;
-        // Remember every successful route match as the last confirmed road
-        // position. It becomes the safe fallback while a new snap is pending.
         _roadSnapPoint = displayPoint;
       }
     }
 
     if (displayPoint == null) {
-      // Ask the nearest-road service for a fresh match, but never fall back to
-      // the raw GPS coordinate while waiting.
       unawaited(_refreshRoadSnapIfNeeded(rawPoint));
       displayPoint = _roadSnapPoint;
     }
 
-    // No confirmed road point yet (usually only during the first seconds after
-    // launch): hide/wait rather than showing the vehicle inside a building.
     if (displayPoint == null) return;
 
-    if (_vehicle == null) {
-      _vehicle = await map.addSymbol(
-        SymbolOptions(
-          geometry: displayPoint,
-          iconImage: 'vehicle-marker',
-          iconSize: 0.56,
-          iconRotate: heading,
-          iconAnchor: 'center',
-        ),
-      );
-    } else {
-      await map.updateSymbol(
-        _vehicle!,
-        SymbolOptions(geometry: displayPoint, iconRotate: heading),
-      );
-    }
+    // GPS updates only move the TARGET. The visible marker and camera are
+    // updated by a 10 fps render loop. This prevents animation queues, freezes
+    // and the large catch-up jumps that occurred when every GPS sample called
+    // animateCamera directly.
+    _targetDisplayPoint = displayPoint;
+    _renderedDisplayPoint ??= displayPoint;
+    if (_renderedHeading == 0) _renderedHeading = _targetHeading;
 
     unawaited(_maybeReroute(p));
     unawaited(_refreshTrafficSignalsIfNeeded(displayPoint));
     _updateNextTrafficSignal(displayPoint);
+  }
 
-    if (_following) {
-      final speedKmh = (p.speed.isFinite ? p.speed : 0) * 3.6;
-      final zoom = speedKmh > 90
-          ? 17.0
-          : speedKmh > 60
-              ? 17.5
-              : speedKmh > 35
-                  ? 18.0
-                  : 18.5;
-      final tilt = speedKmh > 35 ? 58.0 : 52.0;
-      final lookAheadMeters = speedKmh > 90
-          ? 90.0
-          : speedKmh > 60
-              ? 70.0
-              : speedKmh > 35
-                  ? 45.0
-                  : 25.0;
-      final cameraTarget = _pointAhead(displayPoint, heading, lookAheadMeters);
-      await _animateCamera(
-        CameraUpdate.newCameraPosition(
-          CameraPosition(
-            target: cameraTarget,
-            zoom: zoom,
-            bearing: heading,
-            tilt: tilt,
-          ),
-        ),
+  double _preferredHeading(Position p) {
+    final courseValid =
+        p.heading.isFinite && p.heading >= 0 && p.heading <= 360;
+    final device = _deviceHeading;
+
+    // Above ~10 km/h, GPS course is normally more stable inside a vehicle.
+    // Below that speed, use the device compass so rotating the phone rotates
+    // the arrow immediately instead of leaving it stuck on the old course.
+    if (_lastSpeedMps >= 2.8 && courseValid) {
+      return _normalizeHeading(p.heading);
+    }
+    if (device != null && device.isFinite) return _normalizeHeading(device);
+    if (courseValid) return _normalizeHeading(p.heading);
+    return _targetHeading;
+  }
+
+  double _normalizeHeading(double value) {
+    var result = value % 360.0;
+    if (result < 0) result += 360.0;
+    return result;
+  }
+
+  double _lerpHeading(double from, double to, double t) {
+    final a = _normalizeHeading(from);
+    final b = _normalizeHeading(to);
+    var delta = ((b - a + 540.0) % 360.0) - 180.0;
+    if (!delta.isFinite) delta = 0;
+    return _normalizeHeading(a + delta * t.clamp(0.0, 1.0));
+  }
+
+  LatLng _moveToward(LatLng from, LatLng to, double maxMeters) {
+    final distance = Geolocator.distanceBetween(
+      from.latitude,
+      from.longitude,
+      to.latitude,
+      to.longitude,
+    );
+    if (!distance.isFinite || distance <= maxMeters || distance < 0.25) {
+      return to;
+    }
+    final ratio = (maxMeters / distance).clamp(0.0, 1.0);
+    return LatLng(
+      from.latitude + (to.latitude - from.latitude) * ratio,
+      from.longitude + (to.longitude - from.longitude) * ratio,
+    );
+  }
+
+  Future<void> _renderFrame() async {
+    if (_renderTickBusy || !_styleReady || !_mapVisible) return;
+    final map = _map;
+    final target = _targetDisplayPoint;
+    if (map == null || target == null) return;
+
+    _renderTickBusy = true;
+    try {
+      var rendered = _renderedDisplayPoint ?? target;
+      final maxStepMeters = math.max(
+        2.0,
+        math.min(9.0, _lastSpeedMps * 0.22 + 1.6),
       );
+      rendered = _moveToward(rendered, target, maxStepMeters);
+      _renderedDisplayPoint = rendered;
+
+      final headingAlpha = _lastSpeedMps >= 2.8 ? 0.34 : 0.22;
+      _renderedHeading =
+          _lerpHeading(_renderedHeading, _targetHeading, headingAlpha);
+
+      if (_vehicle == null) {
+        _vehicle = await map.addSymbol(
+          SymbolOptions(
+            geometry: rendered,
+            iconImage: 'vehicle-marker',
+            iconSize: 0.56,
+            iconRotate: _following ? 0.0 : _renderedHeading,
+            iconAnchor: 'center',
+          ),
+        );
+      } else {
+        await map.updateSymbol(
+          _vehicle!,
+          SymbolOptions(
+            geometry: rendered,
+            iconRotate: _following ? 0.0 : _renderedHeading,
+          ),
+        );
+      }
+
+      if (_following) {
+        final now = DateTime.now();
+        if (_lastCameraFrameAt == null ||
+            now.difference(_lastCameraFrameAt!) >=
+                const Duration(milliseconds: 220)) {
+          _lastCameraFrameAt = now;
+          final speedKmh = _lastSpeedMps * 3.6;
+          final zoom = speedKmh > 90
+              ? 17.0
+              : speedKmh > 60
+                  ? 17.5
+                  : speedKmh > 35
+                      ? 18.0
+                      : 18.5;
+          final tilt = speedKmh > 35 ? 58.0 : 52.0;
+          final lookAheadMeters = speedKmh > 90
+              ? 90.0
+              : speedKmh > 60
+                  ? 70.0
+                  : speedKmh > 35
+                      ? 45.0
+                      : 25.0;
+          final cameraTarget =
+              _pointAhead(rendered, _renderedHeading, lookAheadMeters);
+          await _moveCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(
+                target: cameraTarget,
+                zoom: zoom,
+                bearing: _renderedHeading,
+                tilt: tilt,
+              ),
+            ),
+          );
+        }
+      }
+    } catch (_) {
+      // A single renderer/platform-channel hiccup must not stall navigation.
+    } finally {
+      _renderTickBusy = false;
     }
   }
 
@@ -969,7 +1120,7 @@ class _MapScreenState extends State<MapScreen> {
     final lastAt = _lastRoadSnapAt;
     final lastPoint = _lastRoadSnapRequestPoint;
     if (lastAt != null &&
-        now.difference(lastAt) < const Duration(seconds: 3) &&
+        now.difference(lastAt) < const Duration(milliseconds: 800) &&
         lastPoint != null &&
         Geolocator.distanceBetween(
               rawPoint.latitude,
@@ -977,7 +1128,7 @@ class _MapScreenState extends State<MapScreen> {
               lastPoint.latitude,
               lastPoint.longitude,
             ) <
-            15) {
+            4) {
       return;
     }
 
@@ -1216,17 +1367,22 @@ class _MapScreenState extends State<MapScreen> {
     return LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
   }
 
-  Future<void> _animateCamera(CameraUpdate update) async {
+  Future<void> _moveCamera(CameraUpdate update) async {
     final map = _map;
     if (map == null) return;
 
     _programmaticCameraMove = true;
     try {
-      await map.animateCamera(update);
+      // MapLibre 0.26.x exposes linear easeCamera specifically for continuous
+      // GPS tracking. Successive updates keep a constant visual velocity and
+      // avoid the stop/start effect of the old ease-in/ease-out animations.
+      await map.easeCamera(
+        update,
+        duration: const Duration(milliseconds: 240),
+        interpolation: CameraAnimationInterpolation.linear,
+      );
     } finally {
-      // Give MapLibre's final camera callback a moment to arrive before we
-      // treat subsequent moves as a user gesture.
-      await Future<void>.delayed(const Duration(milliseconds: 120));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       _programmaticCameraMove = false;
     }
   }
@@ -1322,14 +1478,22 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _onStyleLoaded() async {
     _styleReady = true;
-    final bytes = await rootBundle.load('assets/icons/vehicle.png');
-    await _map?.addImage(
-      'vehicle-marker',
-      bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
-    );
-    await _redrawRoute();
-    await _redrawTrafficSignals();
-    if (_lastPosition != null) await _onPosition(_lastPosition!);
+    try {
+      final bytes = await rootBundle.load('assets/icons/vehicle.png');
+      await _map?.addImage(
+        'vehicle-marker',
+        bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes),
+      );
+      await _redrawRoute();
+      await _redrawTrafficSignals();
+      if (_lastPosition != null) await _onPosition(_lastPosition!);
+    } catch (_) {
+      // Do not trap the app behind a loading screen if an annotation/image
+      // refresh fails; the base map can still remain usable.
+    } finally {
+      await Future<void>.delayed(const Duration(milliseconds: 280));
+      if (mounted) setState(() => _mapVisible = true);
+    }
   }
 
   Future<void> _redrawRoute() async {
@@ -1492,11 +1656,12 @@ class _MapScreenState extends State<MapScreen> {
     Navigator.pop(context);
     setState(() {
       _theme = theme;
-      _resolvedMapStyle = theme.mapStyle;
-      _styleRevision++;
+      _mapStylePrepared = false;
+      _mapVisible = false;
       _styleReady = false;
       _map = null;
       _vehicle = null;
+      _renderedDisplayPoint = null;
       _routeGlowLine = null;
       _routeLine = null;
       _trafficSignalCircles.clear();
@@ -1766,22 +1931,44 @@ class _MapScreenState extends State<MapScreen> {
     return Directionality(
       textDirection: TextDirection.rtl,
       child: Scaffold(
-        backgroundColor: Colors.black,
+        backgroundColor: _theme.panel,
         body: Stack(
           children: [
-            MapLibreMap(
-              key: ValueKey('${_theme.id}:$_styleRevision'),
-              styleString: _resolvedMapStyle,
-              initialCameraPosition: CameraPosition(
-                target: initialTarget,
-                zoom: _lastPosition == null ? 9 : 16,
+            if (_mapStylePrepared)
+              MapLibreMap(
+                key: ValueKey('${_theme.id}:$_styleRevision'),
+                styleString: _resolvedMapStyle,
+                initialCameraPosition: CameraPosition(
+                  target: initialTarget,
+                  zoom: _lastPosition == null ? 9 : 16,
+                ),
+                onMapCreated: (c) => _map = c,
+                onStyleLoadedCallback: _onStyleLoaded,
+                onCameraMove: _handleCameraMove,
+                compassEnabled: false,
+              )
+            else
+              Positioned.fill(
+                child: ColoredBox(
+                  color: _theme.panel,
+                  child: Center(
+                    child: CircularProgressIndicator(color: _theme.accent),
+                  ),
+                ),
               ),
-              onMapCreated: (c) => _map = c,
-              onStyleLoadedCallback: _onStyleLoaded,
-              onCameraMove: _handleCameraMove,
-              compassEnabled: false,
-            ),
-            Positioned.fill(child: GameMapFxOverlay(theme: _theme)),
+            if (_mapStylePrepared)
+              Positioned.fill(child: GameMapFxOverlay(theme: _theme)),
+            if (!_mapVisible)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    color: _theme.panel,
+                    alignment: Alignment.center,
+                    child: CircularProgressIndicator(color: _theme.accent),
+                  ),
+                ),
+              ),
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(12),
