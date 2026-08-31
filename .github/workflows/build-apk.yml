@@ -63,6 +63,33 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Force Android screen to stay on
+        run: |
+          MAIN_ACTIVITY="$(find android/app/src/main/kotlin -name MainActivity.kt | head -n 1)"
+          test -n "$MAIN_ACTIVITY"
+          PACKAGE_LINE="$(grep '^package ' "$MAIN_ACTIVITY" | head -n 1)"
+          test -n "$PACKAGE_LINE"
+          cat > "$MAIN_ACTIVITY" <<EOF
+          $PACKAGE_LINE
+
+          import android.os.Bundle
+          import android.view.WindowManager
+          import io.flutter.embedding.android.FlutterActivity
+
+          class MainActivity: FlutterActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+              }
+          }
+          EOF
+          echo "Patched $MAIN_ACTIVITY with FLAG_KEEP_SCREEN_ON"
+
       - name: Apply Android permissions
         run: |
           test -f platform_overrides/AndroidManifest.xml
@@ -82,6 +109,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: GameNav-APK-v0.4.2
+          name: GameNav-APK-v0.4.7
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
