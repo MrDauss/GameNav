@@ -1,7 +1,7 @@
 name: gamenav
 description: Game-style GPS navigation prototype
 publish_to: 'none'
-version: 0.4.6+7
+version: 0.4.7+8
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
