@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,9 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Android: TextureView / hybrid composition improves platform-view touch
+  // handling and reduces intermittent black rendering on recent devices.
+  MapLibreMap.useHybridComposition = true;
   runApp(const GameNavApp());
 }
 
@@ -37,15 +41,35 @@ class SearchResult {
   const SearchResult(this.name, this.lat, this.lon);
 }
 
+class NavigationStep {
+  final LatLng point;
+  final String type;
+  final String? modifier;
+  final String roadName;
+  final int? exitNumber;
+  final double distanceMeters;
+
+  const NavigationStep({
+    required this.point,
+    required this.type,
+    required this.modifier,
+    required this.roadName,
+    required this.exitNumber,
+    required this.distanceMeters,
+  });
+}
+
 class RouteResult {
   final List<LatLng> geometry;
   final double distanceMeters;
   final double durationSeconds;
+  final List<NavigationStep> steps;
 
   const RouteResult(
     this.geometry,
     this.distanceMeters,
     this.durationSeconds,
+    this.steps,
   );
 }
 
@@ -176,8 +200,12 @@ class GameStyleBuilder {
 
       if (type == 'fill-extrusion') {
         if (_containsAny(token, ['building'])) {
+          // 3D buildings are kept for the slow, close-up game view, but are
+          // skipped while driving faster. This cuts GPU/tile pressure and
+          // prevents the black-frame stalls seen in navigation.
+          raw['minzoom'] = 19.15;
           paint['fill-extrusion-color'] = palette.building;
-          paint['fill-extrusion-opacity'] = 0.82;
+          paint['fill-extrusion-opacity'] = 0.64;
         }
         continue;
       }
@@ -742,10 +770,44 @@ class OpenMapServices {
         );
       }).toList();
 
+      final parsedSteps = <NavigationStep>[];
+      final legs = route['legs'];
+      if (legs is List) {
+        for (final rawLeg in legs) {
+          if (rawLeg is! Map<String, dynamic>) continue;
+          final steps = rawLeg['steps'];
+          if (steps is! List) continue;
+          for (final rawStep in steps) {
+            if (rawStep is! Map<String, dynamic>) continue;
+            final maneuver = rawStep['maneuver'];
+            if (maneuver is! Map<String, dynamic>) continue;
+            final location = maneuver['location'];
+            if (location is! List || location.length < 2) continue;
+            final lon = location[0];
+            final lat = location[1];
+            if (lat is! num || lon is! num) continue;
+
+            final exitRaw = maneuver['exit'];
+            parsedSteps.add(
+              NavigationStep(
+                point: LatLng(lat.toDouble(), lon.toDouble()),
+                type: maneuver['type']?.toString() ?? 'turn',
+                modifier: maneuver['modifier']?.toString(),
+                roadName: rawStep['name']?.toString() ?? '',
+                exitNumber: exitRaw is num ? exitRaw.toInt() : null,
+                distanceMeters:
+                    (rawStep['distance'] as num?)?.toDouble() ?? 0.0,
+              ),
+            );
+          }
+        }
+      }
+
       return RouteResult(
         points,
         (route['distance'] as num).toDouble(),
         (route['duration'] as num).toDouble(),
+        parsedSteps,
       );
     }).toList();
   }
@@ -776,8 +838,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   double _targetHeading = 0;
   double _renderedHeading = 0;
   double _lastSpeedMps = 0;
-  bool _renderTickBusy = false;
-  DateTime? _lastCameraFrameAt;
+  bool _markerTickBusy = false;
+  bool _cameraTickBusy = false;
+  DateTime? _lastCameraCommandAt;
+  bool _mapPointerDown = false;
+  Offset? _mapPointerOrigin;
+  NavigationStep? _nextNavigationStep;
+  double? _distanceToNextManeuver;
   LatLng? _lastRoadSnapRequestPoint;
   DateTime? _lastRoadSnapAt;
   bool _roadSnapBusy = false;
@@ -825,7 +892,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     unawaited(WakelockPlus.enable());
     _startCompass();
     _renderTimer = Timer.periodic(
-      const Duration(milliseconds: 100),
+      const Duration(milliseconds: 80),
       (_) => unawaited(_renderFrame()),
     );
     unawaited(_prepareThemeStyle(_theme));
@@ -982,6 +1049,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     unawaited(_maybeReroute(p));
     unawaited(_refreshTrafficSignalsIfNeeded(displayPoint));
     _updateNextTrafficSignal(displayPoint);
+    _updateNavigationInstruction(displayPoint);
   }
 
   double _preferredHeading(Position p) {
@@ -1032,22 +1100,36 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _renderFrame() async {
-    if (_renderTickBusy || !_styleReady || !_mapVisible) return;
+    if (_markerTickBusy || !_styleReady || !_mapVisible) return;
     final map = _map;
     final target = _targetDisplayPoint;
     if (map == null || target == null) return;
 
-    _renderTickBusy = true;
+    _markerTickBusy = true;
     try {
       var rendered = _renderedDisplayPoint ?? target;
-      final maxStepMeters = math.max(
-        2.0,
-        math.min(9.0, _lastSpeedMps * 0.22 + 1.6),
+      final distanceToTarget = Geolocator.distanceBetween(
+        rendered.latitude,
+        rendered.longitude,
+        target.latitude,
+        target.longitude,
       );
-      rendered = _moveToward(rendered, target, maxStepMeters);
+
+      // Smooth between GPS samples, but catch up faster if the native location
+      // provider delivered a delayed sample. The marker renderer is completely
+      // separate from the camera animation so a camera move can never freeze it.
+      final nominalStep = math.max(1.4, _lastSpeedMps * 0.12 + 1.1);
+      final catchUpBoost = distanceToTarget > 25
+          ? math.min(9.0, (distanceToTarget - 20) * 0.16)
+          : 0.0;
+      rendered = _moveToward(
+        rendered,
+        target,
+        math.min(14.0, nominalStep + catchUpBoost),
+      );
       _renderedDisplayPoint = rendered;
 
-      final headingAlpha = _lastSpeedMps >= 2.8 ? 0.34 : 0.22;
+      final headingAlpha = _lastSpeedMps >= 2.8 ? 0.42 : 0.30;
       _renderedHeading =
           _lerpHeading(_renderedHeading, _targetHeading, headingAlpha);
 
@@ -1056,7 +1138,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           SymbolOptions(
             geometry: rendered,
             iconImage: 'vehicle-marker',
-            iconSize: 0.56,
+            iconSize: 0.58,
             iconRotate: _following ? 0.0 : _renderedHeading,
             iconAnchor: 'center',
           ),
@@ -1072,47 +1154,73 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
 
       if (_following) {
-        final now = DateTime.now();
-        if (_lastCameraFrameAt == null ||
-            now.difference(_lastCameraFrameAt!) >=
-                const Duration(milliseconds: 220)) {
-          _lastCameraFrameAt = now;
-          final speedKmh = _lastSpeedMps * 3.6;
-          final zoom = speedKmh > 90
-              ? 17.0
-              : speedKmh > 60
-                  ? 17.5
-                  : speedKmh > 35
-                      ? 18.0
-                      : 18.5;
-          final tilt = speedKmh > 35 ? 58.0 : 52.0;
-          final lookAheadMeters = speedKmh > 90
-              ? 90.0
-              : speedKmh > 60
-                  ? 70.0
-                  : speedKmh > 35
-                      ? 45.0
-                      : 25.0;
-          final cameraTarget =
-              _pointAhead(rendered, _renderedHeading, lookAheadMeters);
-          await _moveCamera(
-            CameraUpdate.newCameraPosition(
-              CameraPosition(
-                target: cameraTarget,
-                zoom: zoom,
-                bearing: _renderedHeading,
-                tilt: tilt,
-              ),
-            ),
-          );
-        }
+        unawaited(_updateFollowCamera(rendered));
       }
     } catch (_) {
       // A single renderer/platform-channel hiccup must not stall navigation.
     } finally {
-      _renderTickBusy = false;
+      _markerTickBusy = false;
     }
   }
+
+  Future<void> _updateFollowCamera(LatLng rendered) async {
+    if (_cameraTickBusy || !_following || !_styleReady || !_mapVisible) return;
+    final map = _map;
+    if (map == null) return;
+
+    final now = DateTime.now();
+    if (_lastCameraCommandAt != null &&
+        now.difference(_lastCameraCommandAt!) <
+            const Duration(milliseconds: 360)) {
+      return;
+    }
+
+    _lastCameraCommandAt = now;
+    _cameraTickBusy = true;
+    _programmaticCameraMove = true;
+    try {
+      final speedKmh = _lastSpeedMps * 3.6;
+
+      // Closer navigation view than v0.4.6. Lower pitch also reduces how many
+      // distant vector tiles/3D objects have to be rendered at once.
+      final zoom = speedKmh > 100
+          ? 18.2
+          : speedKmh > 70
+              ? 18.6
+              : speedKmh > 40
+                  ? 19.0
+                  : 19.3;
+      final tilt = speedKmh > 70 ? 50.0 : 46.0;
+      final lookAheadMeters = speedKmh > 100
+          ? 65.0
+          : speedKmh > 70
+              ? 50.0
+              : speedKmh > 40
+                  ? 34.0
+                  : 20.0;
+      final cameraTarget =
+          _pointAhead(rendered, _renderedHeading, lookAheadMeters);
+
+      await map.easeCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: cameraTarget,
+            zoom: zoom,
+            bearing: _renderedHeading,
+            tilt: tilt,
+          ),
+        ),
+        duration: const Duration(milliseconds: 420),
+        interpolation: CameraAnimationInterpolation.linear,
+      );
+    } catch (_) {
+      // Keep the marker renderer alive even when one native camera command fails.
+    } finally {
+      _programmaticCameraMove = false;
+      _cameraTickBusy = false;
+    }
+  }
+
 
   Future<void> _refreshRoadSnapIfNeeded(LatLng rawPoint) async {
     if (_roadSnapBusy) return;
@@ -1345,6 +1453,196 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return bestIndex;
   }
 
+  void _updateNavigationInstruction(LatLng vehiclePoint) {
+    final route = _route;
+    if (route == null || route.geometry.isEmpty || route.steps.isEmpty) {
+      if (_nextNavigationStep != null || _distanceToNextManeuver != null) {
+        if (mounted) {
+          setState(() {
+            _nextNavigationStep = null;
+            _distanceToNextManeuver = null;
+          });
+        } else {
+          _nextNavigationStep = null;
+          _distanceToNextManeuver = null;
+        }
+      }
+      return;
+    }
+
+    final currentIndex =
+        _nearestRouteVertexIndex(vehiclePoint, route.geometry);
+    NavigationStep? bestStep;
+    var bestStepIndex = 1 << 30;
+    var bestDistance = double.infinity;
+
+    for (final step in route.steps) {
+      if (step.type == 'depart') continue;
+      final stepIndex = _nearestRouteVertexIndex(step.point, route.geometry);
+      if (stepIndex + 2 < currentIndex) continue;
+
+      final distance = _distanceAlongRoute(
+        vehiclePoint,
+        currentIndex,
+        stepIndex,
+        route.geometry,
+      );
+
+      // Once a maneuver has effectively been crossed, move to the next one.
+      if (distance < 9.0 && step.type != 'arrive') continue;
+
+      if (stepIndex < bestStepIndex ||
+          (stepIndex == bestStepIndex && distance < bestDistance)) {
+        bestStep = step;
+        bestStepIndex = stepIndex;
+        bestDistance = distance;
+      }
+    }
+
+    if (bestStep == null) {
+      bestStep = route.steps.isNotEmpty ? route.steps.last : null;
+      bestDistance = bestStep == null
+          ? double.infinity
+          : Geolocator.distanceBetween(
+              vehiclePoint.latitude,
+              vehiclePoint.longitude,
+              bestStep.point.latitude,
+              bestStep.point.longitude,
+            );
+    }
+
+    final oldDistance = _distanceToNextManeuver;
+    final changedStep = !identical(bestStep, _nextNavigationStep);
+    final changedDistance = oldDistance == null ||
+        !bestDistance.isFinite ||
+        (oldDistance - bestDistance).abs() >= 12.0;
+
+    if (changedStep || changedDistance) {
+      if (mounted) {
+        setState(() {
+          _nextNavigationStep = bestStep;
+          _distanceToNextManeuver =
+              bestDistance.isFinite
+                  ? (bestDistance < 0 ? 0.0 : bestDistance)
+                  : null;
+        });
+      } else {
+        _nextNavigationStep = bestStep;
+        _distanceToNextManeuver =
+            bestDistance.isFinite
+                ? (bestDistance < 0 ? 0.0 : bestDistance)
+                : null;
+      }
+    }
+  }
+
+  double _distanceAlongRoute(
+    LatLng vehiclePoint,
+    int startIndex,
+    int endIndex,
+    List<LatLng> geometry,
+  ) {
+    if (geometry.isEmpty) return double.infinity;
+    final start = startIndex.clamp(0, geometry.length - 1).toInt();
+    final end = endIndex.clamp(0, geometry.length - 1).toInt();
+    if (end < start) {
+      return Geolocator.distanceBetween(
+        vehiclePoint.latitude,
+        vehiclePoint.longitude,
+        geometry[end].latitude,
+        geometry[end].longitude,
+      );
+    }
+
+    var distance = Geolocator.distanceBetween(
+      vehiclePoint.latitude,
+      vehiclePoint.longitude,
+      geometry[start].latitude,
+      geometry[start].longitude,
+    );
+    for (var i = start; i < end; i++) {
+      distance += Geolocator.distanceBetween(
+        geometry[i].latitude,
+        geometry[i].longitude,
+        geometry[i + 1].latitude,
+        geometry[i + 1].longitude,
+      );
+    }
+    return distance;
+  }
+
+  String _formatManeuverDistance(double? meters) {
+    if (meters == null || !meters.isFinite) return '';
+    if (meters >= 950) {
+      final km = meters / 1000.0;
+      return km >= 10
+          ? '${km.round()} ק״מ'
+          : '${km.toStringAsFixed(km >= 3 ? 1 : 1)} ק״מ';
+    }
+    if (meters >= 100) {
+      return '${(meters / 50).round() * 50} מ׳';
+    }
+    return '${math.max(10, (meters / 10).round() * 10)} מ׳';
+  }
+
+  String _maneuverText(NavigationStep step) {
+    final modifier = step.modifier ?? '';
+    String action;
+
+    if (modifier.contains('uturn') || step.type == 'uturn') {
+      action = 'בצע פרסה';
+    } else if (step.type == 'roundabout' || step.type == 'rotary') {
+      action = step.exitNumber != null
+          ? 'בכיכר צא ביציאה ${step.exitNumber}'
+          : 'היכנס לכיכר';
+    } else if (step.type == 'merge') {
+      action = modifier.contains('left') ? 'השתלב שמאלה' : 'השתלב ימינה';
+    } else if (step.type == 'fork') {
+      action = modifier.contains('left') ? 'הישאר שמאלה' : 'הישאר ימינה';
+    } else if (step.type == 'on ramp') {
+      action = modifier.contains('left') ? 'עלה במחלף שמאלה' : 'עלה במחלף ימינה';
+    } else if (step.type == 'off ramp') {
+      action = modifier.contains('left') ? 'צא במחלף שמאלה' : 'צא במחלף ימינה';
+    } else if (modifier.contains('sharp left')) {
+      action = 'פנה חד שמאלה';
+    } else if (modifier.contains('slight left')) {
+      action = 'פנה מעט שמאלה';
+    } else if (modifier.contains('left')) {
+      action = 'פנה שמאלה';
+    } else if (modifier.contains('sharp right')) {
+      action = 'פנה חד ימינה';
+    } else if (modifier.contains('slight right')) {
+      action = 'פנה מעט ימינה';
+    } else if (modifier.contains('right')) {
+      action = 'פנה ימינה';
+    } else if (step.type == 'arrive') {
+      action = 'הגעת ליעד';
+    } else {
+      action = 'המשך ישר';
+    }
+
+    final road = step.roadName.trim();
+    if (road.isNotEmpty && step.type != 'arrive') {
+      return '$action אל $road';
+    }
+    return action;
+  }
+
+  IconData _maneuverIcon(NavigationStep step) {
+    final modifier = step.modifier ?? '';
+    if (modifier.contains('uturn') || step.type == 'uturn') {
+      return Icons.u_turn_left;
+    }
+    if (step.type == 'roundabout' || step.type == 'rotary') {
+      return Icons.roundabout_left;
+    }
+    if (step.type == 'merge') return Icons.merge;
+    if (modifier.contains('left')) return Icons.turn_left;
+    if (modifier.contains('right')) return Icons.turn_right;
+    if (step.type == 'arrive') return Icons.flag;
+    return Icons.straight;
+  }
+
   LatLng _pointAhead(LatLng from, double bearingDegrees, double meters) {
     if (!bearingDegrees.isFinite || meters <= 0) return from;
 
@@ -1367,29 +1665,83 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return LatLng(lat2 * 180.0 / math.pi, lon2 * 180.0 / math.pi);
   }
 
-  Future<void> _moveCamera(CameraUpdate update) async {
-    final map = _map;
-    if (map == null) return;
+  void _handleMapPointerDown(PointerDownEvent event) {
+    _mapPointerDown = true;
+    _mapPointerOrigin = event.position;
+  }
 
-    _programmaticCameraMove = true;
-    try {
-      // MapLibre 0.26.x exposes linear easeCamera specifically for continuous
-      // GPS tracking. Successive updates keep a constant visual velocity and
-      // avoid the stop/start effect of the old ease-in/ease-out animations.
-      await map.easeCamera(
-        update,
-        duration: const Duration(milliseconds: 240),
-        interpolation: CameraAnimationInterpolation.linear,
-      );
-    } finally {
-      await Future<void>.delayed(const Duration(milliseconds: 80));
-      _programmaticCameraMove = false;
+  void _handleMapPointerMove(PointerMoveEvent event) {
+    if (!_mapPointerDown || !_following) return;
+    final origin = _mapPointerOrigin;
+    if (origin == null) return;
+    if ((event.position - origin).distance >= 7.0) {
+      _enterExploreMode();
     }
   }
 
-  void _handleCameraMove(CameraPosition _) {
-    if (!mounted || _programmaticCameraMove || !_following) return;
+  void _handleMapPointerEnd(PointerEvent _) {
+    _mapPointerDown = false;
+    _mapPointerOrigin = null;
+  }
+
+  void _enterExploreMode() {
+    if (!mounted || !_following) return;
     setState(() => _following = false);
+  }
+
+  void _handleCameraMove(CameraPosition _) {
+    // User drags/pinches should always win over auto-follow. Pointer detection
+    // is used because camera callbacks are also fired by our own tracking
+    // animations.
+    if (_mapPointerDown && _following) {
+      _enterExploreMode();
+    }
+  }
+
+  Future<void> _resumeFollowing() async {
+    if (mounted) setState(() => _following = true);
+    final rendered = _renderedDisplayPoint ?? _targetDisplayPoint;
+    if (rendered != null) {
+      _lastCameraCommandAt = null;
+      await _updateFollowCamera(rendered);
+    } else if (_lastPosition != null) {
+      await _onPosition(_lastPosition!);
+    }
+  }
+
+  Future<void> _showRouteOverview() async {
+    final map = _map;
+    final route = _route;
+    if (map == null || route == null || route.geometry.isEmpty) return;
+
+    if (mounted) setState(() => _following = false);
+
+    var minLat = route.geometry.first.latitude;
+    var maxLat = route.geometry.first.latitude;
+    var minLon = route.geometry.first.longitude;
+    var maxLon = route.geometry.first.longitude;
+    for (final point in route.geometry.skip(1)) {
+      minLat = math.min(minLat, point.latitude);
+      maxLat = math.max(maxLat, point.latitude);
+      minLon = math.min(minLon, point.longitude);
+      maxLon = math.max(maxLon, point.longitude);
+    }
+
+    try {
+      await map.animateCamera(
+        CameraUpdate.newLatLngBounds(
+          LatLngBounds(
+            southwest: LatLng(minLat, minLon),
+            northeast: LatLng(maxLat, maxLon),
+          ),
+          left: 42,
+          top: 140,
+          right: 42,
+          bottom: 120,
+        ),
+        duration: const Duration(milliseconds: 500),
+      );
+    } catch (_) {}
   }
 
   double _distanceToRouteMeters(LatLng point, List<LatLng> geometry) {
@@ -1922,6 +2274,116 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
+  Widget _searchBox() {
+    return Material(
+      color: _theme.panel,
+      elevation: 10,
+      borderRadius: BorderRadius.circular(22),
+      child: TextField(
+        controller: _searchController,
+        textInputAction: TextInputAction.search,
+        onSubmitted: (_) => _searchDestination(),
+        style: TextStyle(color: _theme.foreground),
+        decoration: InputDecoration(
+          hintText: 'לאן נוסעים?',
+          hintStyle: TextStyle(
+            color: _theme.foreground.withValues(alpha: 0.65),
+          ),
+          prefixIcon: Icon(Icons.search, color: _theme.accent),
+          suffixIcon: _busy
+              ? Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: _theme.accent,
+                    ),
+                  ),
+                )
+              : IconButton(
+                  icon: Icon(Icons.arrow_back, color: _theme.accent),
+                  onPressed: _searchDestination,
+                ),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 16,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _navigationBanner() {
+    final step = _nextNavigationStep;
+    if (_route == null || step == null) return _searchBox();
+
+    final distance = _formatManeuverDistance(_distanceToNextManeuver);
+    final instruction = _maneuverText(step);
+
+    return Material(
+      color: _theme.panel,
+      elevation: 12,
+      borderRadius: BorderRadius.circular(22),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Container(
+              width: 62,
+              height: 62,
+              decoration: BoxDecoration(
+                color: _theme.accent.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: _theme.accent.withValues(alpha: 0.45),
+                ),
+              ),
+              alignment: Alignment.center,
+              child: Icon(
+                _maneuverIcon(step),
+                size: 38,
+                color: _theme.accent,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (distance.isNotEmpty)
+                    Text(
+                      distance,
+                      style: TextStyle(
+                        color: _theme.foreground,
+                        fontSize: 25,
+                        fontWeight: FontWeight.w900,
+                        height: 1.0,
+                      ),
+                    ),
+                  const SizedBox(height: 5),
+                  Text(
+                    instruction,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: _theme.foreground,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final initialTarget = _lastPosition == null
@@ -1935,17 +2397,25 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         body: Stack(
           children: [
             if (_mapStylePrepared)
-              MapLibreMap(
-                key: ValueKey('${_theme.id}:$_styleRevision'),
-                styleString: _resolvedMapStyle,
-                initialCameraPosition: CameraPosition(
-                  target: initialTarget,
-                  zoom: _lastPosition == null ? 9 : 16,
+              Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: _handleMapPointerDown,
+                onPointerMove: _handleMapPointerMove,
+                onPointerUp: _handleMapPointerEnd,
+                onPointerCancel: _handleMapPointerEnd,
+                child: MapLibreMap(
+                  key: ValueKey('${_theme.id}:$_styleRevision'),
+                  styleString: _resolvedMapStyle,
+                  initialCameraPosition: CameraPosition(
+                    target: initialTarget,
+                    zoom: _lastPosition == null ? 9 : 17.5,
+                  ),
+                  onMapCreated: (c) => _map = c,
+                  onStyleLoadedCallback: _onStyleLoaded,
+                  onCameraMove: _handleCameraMove,
+                  compassEnabled: false,
+                  doubleClickZoomEnabled: false,
                 ),
-                onMapCreated: (c) => _map = c,
-                onStyleLoadedCallback: _onStyleLoaded,
-                onCameraMove: _handleCameraMove,
-                compassEnabled: false,
               )
             else
               Positioned.fill(
@@ -1974,45 +2444,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 padding: const EdgeInsets.all(12),
                 child: Column(
                   children: [
-                    Material(
-                      color: _theme.panel,
-                      elevation: 10,
-                      borderRadius: BorderRadius.circular(22),
-                      child: TextField(
-                        controller: _searchController,
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: (_) => _searchDestination(),
-                        style: TextStyle(color: _theme.foreground),
-                        decoration: InputDecoration(
-                          hintText: 'לאן נוסעים?',
-                          hintStyle: TextStyle(
-                            color: _theme.foreground.withValues(alpha: 0.65),
-                          ),
-                          prefixIcon: Icon(Icons.search, color: _theme.accent),
-                          suffixIcon: _busy
-                              ? Padding(
-                                  padding: const EdgeInsets.all(14),
-                                  child: SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: _theme.accent,
-                                    ),
-                                  ),
-                                )
-                              : IconButton(
-                                  icon: Icon(Icons.arrow_back, color: _theme.accent),
-                                  onPressed: _searchDestination,
-                                ),
-                          border: InputBorder.none,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 16,
-                          ),
-                        ),
-                      ),
-                    ),
+                    _route != null ? _navigationBanner() : _searchBox(),
                     if (_gpsIssue != null) ...[
                       const SizedBox(height: 8),
                       Align(
@@ -2131,6 +2563,24 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         ),
                       ),
                     ],
+                    if (!_following && _route != null) ...[
+                      const SizedBox(height: 10),
+                      Align(
+                        alignment: Alignment.center,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: _theme.panel,
+                            foregroundColor: _theme.accent,
+                          ),
+                          onPressed: _resumeFollowing,
+                          icon: const Icon(Icons.navigation),
+                          label: const Text(
+                            'חזרה לניווט',
+                            style: TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                        ),
+                      ),
+                    ],
                     const Spacer(),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
@@ -2153,16 +2603,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                               child: const Icon(Icons.tune),
                             ),
                             const SizedBox(height: 10),
+                            if (_route != null) ...[
+                              FloatingActionButton.small(
+                                heroTag: 'overview',
+                                backgroundColor: _theme.panel,
+                                foregroundColor: _theme.accent,
+                                onPressed: _showRouteOverview,
+                                child: const Icon(Icons.alt_route),
+                              ),
+                              const SizedBox(height: 10),
+                            ],
                             FloatingActionButton.small(
                               heroTag: 'follow',
-                              backgroundColor: _theme.panel,
-                              foregroundColor: _theme.accent,
-                              onPressed: () {
-                                setState(() => _following = true);
-                                if (_lastPosition != null) {
-                                  _onPosition(_lastPosition!);
-                                }
-                              },
+                              backgroundColor:
+                                  _following ? _theme.accent : _theme.panel,
+                              foregroundColor:
+                                  _following ? Colors.black : _theme.accent,
+                              onPressed: _resumeFollowing,
                               child: const Icon(Icons.my_location),
                             ),
                           ],
