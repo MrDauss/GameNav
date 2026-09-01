@@ -1214,40 +1214,48 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _lastCameraFrameAt = now;
           final speedKmh = _lastSpeedMps * 3.6;
 
-          // Waze-like driving camera: the vehicle stays in the lower part of
-          // the screen, the road ahead gets most of the available space, and
-          // pitch stays moderate instead of the steep game-camera angle.
+          // DRIVER POV: MapLibre is still a navigation map (not Street View),
+          // but the camera is now pushed close to the road with a near-horizon
+          // pitch. The camera looks farther ahead than the vehicle position so
+          // the marker stays in the lower third of the screen instead of the
+          // centre. When a route is active, the camera follows the road tangent
+          // so the lane ahead remains visually stable even while GPS/compass
+          // heading is noisy.
           final zoom = speedKmh > 100
-              ? 16.9
+              ? 17.55
               : speedKmh > 70
-                  ? 17.2
+                  ? 17.85
                   : speedKmh > 40
-                      ? 17.55
+                      ? 18.15
                       : speedKmh > 15
-                          ? 17.85
-                          : 18.05;
-          final tilt = speedKmh > 70
-              ? 30.0
-              : speedKmh > 25
-                  ? 24.0
-                  : 18.0;
+                          ? 18.45
+                          : 18.70;
+          final tilt = speedKmh > 80
+              ? 60.0
+              : speedKmh > 35
+                  ? 59.0
+                  : 57.0;
           final lookAheadMeters = speedKmh > 100
-              ? 170.0
+              ? 235.0
               : speedKmh > 70
-                  ? 135.0
+                  ? 190.0
                   : speedKmh > 40
-                      ? 95.0
+                      ? 145.0
                       : speedKmh > 15
-                          ? 65.0
-                          : 38.0;
+                          ? 112.0
+                          : 88.0;
+          final routeHeading = _routeCameraHeading(rendered);
+          final cameraHeading = routeHeading == null
+              ? _renderedHeading
+              : _lerpHeading(_renderedHeading, routeHeading, 0.78);
           final cameraTarget =
-              _pointAhead(rendered, _renderedHeading, lookAheadMeters);
+              _pointAhead(rendered, cameraHeading, lookAheadMeters);
           await _moveCamera(
             CameraUpdate.newCameraPosition(
               CameraPosition(
                 target: cameraTarget,
                 zoom: zoom,
-                bearing: _renderedHeading,
+                bearing: cameraHeading,
                 tilt: tilt,
               ),
             ),
@@ -1490,6 +1498,32 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       }
     }
     return bestIndex;
+  }
+
+  double? _routeCameraHeading(LatLng point) {
+    final route = _route;
+    if (route == null || route.geometry.length < 2) return null;
+
+    final nearest = _nearestPointOnGeometry(point, route.geometry);
+    // Do not force the old route direction when the car is genuinely far from
+    // it (for example during a reroute).
+    if (nearest.$2 > 55) return null;
+
+    final geometry = route.geometry;
+    final index = _nearestRouteVertexIndex(point, geometry);
+    final startIndex = index >= geometry.length - 1 ? geometry.length - 2 : index;
+    final endIndex = math.min(geometry.length - 1, startIndex + 3);
+    final a = geometry[startIndex];
+    final b = geometry[endIndex];
+
+    final lat1 = a.latitude * math.pi / 180.0;
+    final lat2 = b.latitude * math.pi / 180.0;
+    final deltaLon = (b.longitude - a.longitude) * math.pi / 180.0;
+    final y = math.sin(deltaLon) * math.cos(lat2);
+    final x = math.cos(lat1) * math.sin(lat2) -
+        math.sin(lat1) * math.cos(lat2) * math.cos(deltaLon);
+    final bearing = math.atan2(y, x) * 180.0 / math.pi;
+    return _normalizeHeading(bearing);
   }
 
   LatLng _pointAhead(LatLng from, double bearingDegrees, double meters) {
@@ -2091,12 +2125,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final km = route.distanceMeters / 1000;
     final min = (route.durationSeconds / 60).round();
 
+    // Compact top HUD. Keeping ETA away from the lower navigation viewport
+    // guarantees it can never cover the vehicle marker.
     return Material(
-      color: _theme.panel,
-      elevation: 8,
-      borderRadius: BorderRadius.circular(20),
+      color: _theme.panel.withValues(alpha: 0.94),
+      elevation: 6,
+      borderRadius: BorderRadius.circular(16),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -2104,19 +2140,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               '$min דק׳',
               style: TextStyle(
                 color: _theme.accent,
-                fontSize: 21,
+                fontSize: 17,
                 fontWeight: FontWeight.w900,
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 9),
             Text(
               _arrivalTime(route.durationSeconds),
-              style: const TextStyle(fontWeight: FontWeight.w800),
+              style: const TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+              ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             Text(
               '${km.toStringAsFixed(1)} ק״מ',
               style: TextStyle(
+                fontSize: 12,
                 color: _theme.foreground.withValues(alpha: 0.72),
               ),
             ),
@@ -2319,6 +2359,13 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       const SizedBox(height: 8),
                       _routeAlternatives(),
                     ],
+                    if (_route != null) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: _navigationSummary(),
+                      ),
+                    ],
                     if (_nextTrafficSignal != null &&
                         _distanceToNextTrafficSignal != null &&
                         _distanceToNextTrafficSignal! <= 320) ...[
@@ -2371,13 +2418,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       ),
                     ],
                     const Spacer(),
-                    if (_route != null) ...[
-                      Align(
-                        alignment: Alignment.center,
-                        child: _navigationSummary(),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
