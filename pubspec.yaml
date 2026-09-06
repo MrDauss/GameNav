@@ -1,26 +1,32 @@
 name: gamenav
 description: Game-style GPS navigation prototype
 publish_to: 'none'
-version: 0.4.7+8
+version: 0.5.2+11
 
 environment:
-  sdk: '>=3.4.0 <4.0.0'
+  sdk: '>=3.13.0 <4.0.0'
+  flutter: '>=3.47.0'
 
 dependencies:
   flutter:
     sdk: flutter
   maplibre_gl: 0.26.2
-  geolocator: ^14.0.3
-  http: ^1.5.0
+  geolocator: 14.0.3
+  http: 1.5.0
   flutter_compass: 0.8.1
-  wakelock_plus: ^1.7.0
+  wakelock_plus: 1.7.0
+  shared_preferences: 2.5.5
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^5.0.0
+  flutter_lints: 5.0.0
 
 flutter:
   uses-material-design: true
   assets:
     - assets/icons/vehicle.png
+  fonts:
+    - family: Pricedown
+      fonts:
+        - asset: assets/fonts/PricedownBl.otf
