@@ -62,12 +62,34 @@ jobs:
       - name: Verify GameNav source and required assets
         run: |
           set -euo pipefail
-          test -f lib/main.dart
-          grep -q "class GameNavApp" lib/main.dart
-          grep -q "runApp(const GameNavApp())" lib/main.dart
-          test -f assets/icons/vehicle.png
-          test -f assets/fonts/PricedownBl.otf
-          test -f platform_overrides/AndroidManifest.xml
+
+          require_file() {
+            if [ ! -f "$1" ]; then
+              echo "::error::MISSING FILE: $1"
+              echo "Repository paths found nearby:"
+              find . -maxdepth 4 -type f | sort | sed -n '1,220p'
+              exit 1
+            fi
+            echo "OK: $1"
+          }
+
+          require_text() {
+            file="$1"
+            text="$2"
+            if ! grep -Fq "$text" "$file"; then
+              echo "::error::INVALID CONTENT: '$text' was not found in $file"
+              exit 1
+            fi
+            echo "OK: $file contains required GameNav entry point"
+          }
+
+          require_file lib/main.dart
+          require_text lib/main.dart "class GameNavApp"
+          require_text lib/main.dart "runApp(const GameNavApp())"
+          require_file assets/icons/vehicle.png
+          require_file assets/fonts/PricedownBl.otf
+          require_file platform_overrides/AndroidManifest.xml
+
           echo "GameNav source and assets verified."
 
       - name: Reject obvious secrets and cleartext URLs
