@@ -8,7 +8,24 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:maplibre_gl/maplibre_gl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
+const String kGameDisplayFont = 'Pricedown';
+
+TextStyle gameDisplayStyle({
+  double fontSize = 22,
+  Color? color,
+  double letterSpacing = 0.6,
+}) {
+  return TextStyle(
+    fontFamily: kGameDisplayFont,
+    fontSize: fontSize,
+    color: color,
+    letterSpacing: letterSpacing,
+    height: 0.95,
+  );
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -463,7 +480,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'crime_city',
     name: 'Crime City',
-    tagline: 'עיר פתוחה • בהשראת משחקי פשע אורבניים',
+    tagline: 'Open world • urban crime-game atmosphere',
     mapStyle: 'https://tiles.openfreemap.org/styles/liberty',
     accent: Color(0xFFE45AAE),
     panel: Color(0xE8121018),
@@ -474,7 +491,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'frontier',
     name: 'Frontier Trails',
-    tagline: 'מערב פרוע • בהשראת משחקי Frontier',
+    tagline: 'Wild west • frontier adventure atmosphere',
     mapStyle: 'https://tiles.openfreemap.org/styles/fiord',
     accent: Color(0xFFD59A55),
     panel: Color(0xE81E1610),
@@ -485,7 +502,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'neon_coast',
     name: 'Neon Coast',
-    tagline: 'לילה • ניאון • שנות ה־80',
+    tagline: 'Night • neon • 80s atmosphere',
     mapStyle: 'https://tiles.openfreemap.org/styles/dark',
     accent: Color(0xFFFF4FD8),
     panel: Color(0xEB10091C),
@@ -496,7 +513,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'cyber_grid',
     name: 'Cyber Grid',
-    tagline: 'עתידני • HUD דיגיטלי',
+    tagline: 'Futuristic • digital HUD',
     mapStyle: 'https://tiles.openfreemap.org/styles/dark',
     accent: Color(0xFF37F6D1),
     panel: Color(0xE8061718),
@@ -507,7 +524,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'midnight',
     name: 'Midnight Run',
-    tagline: 'נהיגה לילית • מינימליסטי',
+    tagline: 'Night driving • minimal',
     mapStyle: 'https://tiles.openfreemap.org/styles/dark',
     accent: Color(0xFF9D8CFF),
     panel: Color(0xEC111118),
@@ -518,7 +535,7 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'classic',
     name: 'Classic Navigator',
-    tagline: 'מפה בהירה וברורה',
+    tagline: 'Bright • clean navigation map',
     mapStyle: 'https://tiles.openfreemap.org/styles/positron',
     accent: Color(0xFF3F72FF),
     panel: Color(0xEE10131A),
@@ -526,6 +543,132 @@ const gameThemes = <GameThemeSpec>[
     routeColor: '#3F72FF',
     icon: Icons.map,
   ),
+];
+
+
+enum MissionMetric { trips, distanceKm, reports, themes }
+
+class MissionSpec {
+  final String id;
+  final String title;
+  final String description;
+  final int rewardXp;
+  final MissionMetric metric;
+  final double target;
+  final IconData icon;
+
+  const MissionSpec({
+    required this.id,
+    required this.title,
+    required this.description,
+    required this.rewardXp,
+    required this.metric,
+    required this.target,
+    required this.icon,
+  });
+}
+
+class RankSpec {
+  final String name;
+  final int minXp;
+  final IconData icon;
+
+  const RankSpec(this.name, this.minXp, this.icon);
+}
+
+class RewardSpec {
+  final String id;
+  final String name;
+  final int requiredXp;
+  final IconData icon;
+
+  const RewardSpec(this.id, this.name, this.requiredXp, this.icon);
+}
+
+const gameRanks = <RankSpec>[
+  RankSpec('Rookie', 0, Icons.explore_outlined),
+  RankSpec('Street Scout', 250, Icons.assistant_navigation),
+  RankSpec('Pathfinder', 600, Icons.route),
+  RankSpec('Road Ace', 1200, Icons.bolt),
+  RankSpec('Navigator', 2200, Icons.navigation),
+  RankSpec('Elite', 4000, Icons.workspace_premium),
+  RankSpec('Legend', 7000, Icons.emoji_events),
+];
+
+const gameMissions = <MissionSpec>[
+  MissionSpec(
+    id: 'first_route',
+    title: 'First Route',
+    description: 'Complete your first navigation trip.',
+    rewardXp: 100,
+    metric: MissionMetric.trips,
+    target: 1,
+    icon: Icons.flag,
+  ),
+  MissionSpec(
+    id: 'ten_km',
+    title: '10K Explorer',
+    description: 'Drive 10 km while GameNav is navigating.',
+    rewardXp: 150,
+    metric: MissionMetric.distanceKm,
+    target: 10,
+    icon: Icons.explore,
+  ),
+  MissionSpec(
+    id: 'theme_hopper',
+    title: 'Theme Hopper',
+    description: 'Use 3 different GameNav themes.',
+    rewardXp: 120,
+    metric: MissionMetric.themes,
+    target: 3,
+    icon: Icons.palette,
+  ),
+  MissionSpec(
+    id: 'community_helper',
+    title: 'Community Helper',
+    description: 'Add 3 non-enforcement road safety reports while stopped.',
+    rewardXp: 180,
+    metric: MissionMetric.reports,
+    target: 3,
+    icon: Icons.volunteer_activism,
+  ),
+  MissionSpec(
+    id: 'route_regular',
+    title: 'Route Regular',
+    description: 'Complete 10 navigation trips.',
+    rewardXp: 400,
+    metric: MissionMetric.trips,
+    target: 10,
+    icon: Icons.alt_route,
+  ),
+  MissionSpec(
+    id: 'fifty_km',
+    title: '50K Explorer',
+    description: 'Navigate 50 km with GameNav.',
+    rewardXp: 450,
+    metric: MissionMetric.distanceKm,
+    target: 50,
+    icon: Icons.travel_explore,
+  ),
+  MissionSpec(
+    id: 'hundred_km',
+    title: 'Road Veteran',
+    description: 'Navigate 100 km with GameNav.',
+    rewardXp: 700,
+    metric: MissionMetric.distanceKm,
+    target: 100,
+    icon: Icons.military_tech,
+  ),
+];
+
+const gameRewards = <RewardSpec>[
+  RewardSpec('starter', 'Starter', 0, Icons.navigation),
+  RewardSpec('bolt', 'Bolt', 250, Icons.bolt),
+  RewardSpec('star', 'Route Star', 600, Icons.star),
+  RewardSpec('shield', 'Road Shield', 1200, Icons.shield),
+  RewardSpec('crown', 'Navigator Crown', 2200, Icons.diamond),
+  RewardSpec('rocket', 'Elite Rocket', 4000, Icons.rocket_launch),
+  RewardSpec('legend', 'Legend Trophy', 7000, Icons.emoji_events),
 ];
 
 class CommunityReport {
@@ -537,7 +680,7 @@ class CommunityReport {
 
 class OpenMapServices {
   static const _userAgent =
-      'GameNav/0.4.7 (https://github.com/MrDauss/GameNav)';
+      'GameNav/0.5.2 (https://github.com/MrDauss/GameNav)';
 
   static Future<List<SearchResult>> search(
     String query, {
@@ -549,8 +692,7 @@ class OpenMapServices {
       final params = <String, String>{
         'q': query,
         'limit': '7',
-        'lang': 'he',
-        'countrycode': 'IL',
+        'lang': 'en',
       };
 
       if (bias != null) {
@@ -566,39 +708,48 @@ class OpenMapServices {
             headers: {
               'User-Agent': _userAgent,
               'Accept': 'application/json',
-              'Accept-Language': 'he,en;q=0.8',
+              'Accept-Language': 'en,he;q=0.8',
             },
           )
           .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final decoded = jsonDecode(response.body) as Map<String, dynamic>;
-        final features = decoded['features'] as List<dynamic>? ?? const [];
-        final results = <SearchResult>[];
+        final decoded = jsonDecode(response.body);
+        if (decoded is! Map<String, dynamic>) {
+          photonError = 'Photon returned an invalid response';
+        } else {
+          final features = decoded['features'];
+          final results = <SearchResult>[];
 
-        for (final raw in features) {
-          final feature = raw as Map<String, dynamic>;
-          final geometry = feature['geometry'] as Map<String, dynamic>?;
-          final properties = feature['properties'] as Map<String, dynamic>?;
-          final coordinates = geometry?['coordinates'] as List<dynamic>?;
-          if (coordinates == null || coordinates.length < 2) continue;
+          for (final raw in features is List ? features : const <dynamic>[]) {
+            if (raw is! Map<String, dynamic>) continue;
+            final geometry = raw['geometry'];
+            final properties = raw['properties'];
+            if (geometry is! Map<String, dynamic>) continue;
+            final coordinates = geometry['coordinates'];
+            if (coordinates is! List || coordinates.length < 2) continue;
+            if (coordinates[0] is! num || coordinates[1] is! num) continue;
 
-          final lon = (coordinates[0] as num).toDouble();
-          final lat = (coordinates[1] as num).toDouble();
-          final props = properties ?? const <String, dynamic>{};
-          final name = _photonTitle(props);
-          final subtitle = _photonSubtitle(props, name);
-          results.add(
-            SearchResult(
-              name,
-              lat,
-              lon,
-              subtitle: subtitle,
-            ),
-          );
+            final lon = (coordinates[0] as num).toDouble();
+            final lat = (coordinates[1] as num).toDouble();
+            if (!_validCoordinate(lat, lon)) continue;
+            final props = properties is Map<String, dynamic>
+                ? properties
+                : const <String, dynamic>{};
+            final name = _photonTitle(props);
+            final subtitle = _photonSubtitle(props, name);
+            results.add(
+              SearchResult(
+                name,
+                lat,
+                lon,
+                subtitle: subtitle,
+              ),
+            );
+          }
+
+          if (results.isNotEmpty) return results;
         }
-
-        if (results.isNotEmpty) return results;
       } else {
         photonError = 'Photon HTTP ${response.statusCode}';
       }
@@ -612,8 +763,7 @@ class OpenMapServices {
         'format': 'jsonv2',
         'addressdetails': '1',
         'limit': '7',
-        'countrycodes': 'il',
-        'accept-language': 'he,en',
+        'accept-language': 'en,he',
       });
 
       final response = await http
@@ -622,7 +772,7 @@ class OpenMapServices {
             headers: {
               'User-Agent': _userAgent,
               'Accept': 'application/json',
-              'Accept-Language': 'he,en;q=0.8',
+              'Accept-Language': 'en,he;q=0.8',
             },
           )
           .timeout(const Duration(seconds: 10));
@@ -631,18 +781,25 @@ class OpenMapServices {
         throw Exception('Nominatim HTTP ${response.statusCode}');
       }
 
-      final data = jsonDecode(response.body) as List<dynamic>;
-      final results = data.map((e) {
-        final m = e as Map<String, dynamic>;
-        final displayName = m['display_name']?.toString() ?? 'יעד';
+      final data = jsonDecode(response.body);
+      if (data is! List) throw const FormatException('Invalid Nominatim response');
+      final results = <SearchResult>[];
+      for (final raw in data) {
+        if (raw is! Map<String, dynamic>) continue;
+        final lat = double.tryParse(raw['lat']?.toString() ?? '');
+        final lon = double.tryParse(raw['lon']?.toString() ?? '');
+        if (lat == null || lon == null || !_validCoordinate(lat, lon)) continue;
+        final displayName = raw['display_name']?.toString() ?? 'Destination';
         final label = _shortNominatimLabel(displayName);
-        return SearchResult(
-          label.$1,
-          double.parse(m['lat'].toString()),
-          double.parse(m['lon'].toString()),
-          subtitle: label.$2,
+        results.add(
+          SearchResult(
+            label.$1,
+            lat,
+            lon,
+            subtitle: label.$2,
+          ),
         );
-      }).toList();
+      }
 
       if (results.isNotEmpty) return results;
     } catch (e) {
@@ -650,6 +807,15 @@ class OpenMapServices {
     }
 
     return const [];
+  }
+
+  static bool _validCoordinate(double lat, double lon) {
+    return lat.isFinite &&
+        lon.isFinite &&
+        lat >= -90 &&
+        lat <= 90 &&
+        lon >= -180 &&
+        lon <= 180;
   }
 
   static String _photonTitle(Map<String, dynamic> p) {
@@ -667,7 +833,7 @@ class OpenMapServices {
     if (city != null && city.isNotEmpty) return city;
     final district = p['district']?.toString().trim();
     if (district != null && district.isNotEmpty) return district;
-    return 'יעד';
+    return 'Destination';
   }
 
   static String? _photonSubtitle(
@@ -694,7 +860,7 @@ class OpenMapServices {
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
-    if (parts.isEmpty) return ('יעד', null);
+    if (parts.isEmpty) return ('Destination', null);
     final title = parts.first;
     final secondary = <String>[];
     for (final part in parts.skip(1)) {
@@ -781,14 +947,15 @@ class OpenMapServices {
     if (waypoint is! Map<String, dynamic>) return null;
     final location = waypoint['location'];
     if (location is! List || location.length < 2) return null;
+    if (location[0] is! num || location[1] is! num) return null;
+    final lon = (location[0] as num).toDouble();
+    final lat = (location[1] as num).toDouble();
+    if (!_validCoordinate(lat, lon)) return null;
+    final rawDistance = waypoint['distance'];
+    final distance = rawDistance is num ? rawDistance.toDouble() : double.infinity;
+    if (!distance.isFinite || distance < 0) return null;
 
-    return RoadSnapResult(
-      LatLng(
-        (location[1] as num).toDouble(),
-        (location[0] as num).toDouble(),
-      ),
-      (waypoint['distance'] as num?)?.toDouble() ?? 0,
-    );
+    return RoadSnapResult(LatLng(lat, lon), distance);
   }
 
   static Future<List<TrafficSignalInfo>> trafficSignalsNear(
@@ -850,7 +1017,6 @@ class OpenMapServices {
       'overview': 'full',
       'geometries': 'geojson',
       'alternatives': '3',
-      'steps': 'true',
     });
 
     final response = await http
@@ -861,28 +1027,40 @@ class OpenMapServices {
       throw Exception('Routing HTTP ${response.statusCode}');
     }
 
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final routes = data['routes'] as List<dynamic>? ?? const [];
-    if (routes.isEmpty) throw Exception('No route');
+    final data = jsonDecode(response.body);
+    if (data is! Map<String, dynamic>) throw const FormatException('Invalid route response');
+    final rawRoutes = data['routes'];
+    if (rawRoutes is! List || rawRoutes.isEmpty) throw Exception('No route');
 
-    return routes.map((raw) {
-      final route = raw as Map<String, dynamic>;
-      final geometry = route['geometry'] as Map<String, dynamic>;
-      final coordinates = geometry['coordinates'] as List<dynamic>;
-      final points = coordinates.map((c) {
-        final p = c as List<dynamic>;
-        return LatLng(
-          (p[1] as num).toDouble(),
-          (p[0] as num).toDouble(),
-        );
-      }).toList();
-
-      return RouteResult(
-        points,
-        (route['distance'] as num).toDouble(),
-        (route['duration'] as num).toDouble(),
+    final results = <RouteResult>[];
+    for (final raw in rawRoutes) {
+      if (raw is! Map<String, dynamic>) continue;
+      final geometry = raw['geometry'];
+      final distance = raw['distance'];
+      final duration = raw['duration'];
+      if (geometry is! Map<String, dynamic> ||
+          distance is! num ||
+          duration is! num) {
+        continue;
+      }
+      final coordinates = geometry['coordinates'];
+      if (coordinates is! List) continue;
+      final points = <LatLng>[];
+      for (final coordinate in coordinates) {
+        if (coordinate is! List || coordinate.length < 2) continue;
+        if (coordinate[0] is! num || coordinate[1] is! num) continue;
+        final lon = (coordinate[0] as num).toDouble();
+        final lat = (coordinate[1] as num).toDouble();
+        if (!_validCoordinate(lat, lon)) continue;
+        points.add(LatLng(lat, lon));
+      }
+      if (points.length < 2) continue;
+      results.add(
+        RouteResult(points, distance.toDouble(), duration.toDouble()),
       );
-    }).toList();
+    }
+    if (results.isEmpty) throw Exception('No valid route');
+    return results;
   }
 }
 
@@ -925,6 +1103,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   SearchResult? _destination;
   List<RouteResult> _routeOptions = const [];
   int _selectedRouteIndex = 0;
+  int _lastRouteVertexIndex = 0;
+  double _lastRouteMatchDistanceMeters = double.infinity;
+  List<double> _routeRemainingGeometryMeters = const [];
+  double? _remainingRouteDistanceMeters;
+  double? _remainingRouteDurationSeconds;
   bool _styleReady = false;
   bool _mapStylePrepared = false;
   bool _mapVisible = false;
@@ -940,6 +1123,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   int _styleRevision = 0;
   int _styleBuildToken = 0;
   final List<CommunityReport> _reports = [];
+  DateTime? _lastXpEligibleReportAt;
+
+  // Gamification / progression. These values are local in v0.5.2 and are
+  // persisted with SharedPreferences. Friend competition needs the online
+  // GameNav account/backend layer, but the XP/rank/reward model is already
+  // the same model the backend will sync later.
+  int _xp = 0;
+  int _completedTrips = 0;
+  double _totalDrivenKm = 0;
+  int _reportedEvents = 0;
+  final Set<String> _usedThemes = <String>{'crime_city'};
+  final Set<String> _claimedMissions = <String>{};
+  String _selectedRewardId = 'starter';
+  LatLng? _lastProgressPoint;
+  bool _arrivalAwardedForCurrentRoute = false;
+  double _distanceSinceLastProgressSaveKm = 0;
 
   bool avoidTraffic = true;
   bool avoidClosures = true;
@@ -957,7 +1156,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    unawaited(WakelockPlus.enable());
+    unawaited(_setWakeLock(true));
+    unawaited(_loadProgress());
     _startCompass();
     _renderTimer = Timer.periodic(
       const Duration(milliseconds: 100),
@@ -969,12 +1169,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // Keep the display awake whenever the navigation Activity is active.
-    // Android also receives FLAG_KEEP_SCREEN_ON in MainActivity as a native
-    // fallback, so a transient lifecycle event cannot switch the screen off.
+    // Keep the display awake only while the app is actually visible. Android
+    // also receives FLAG_KEEP_SCREEN_ON in MainActivity as a native fallback.
     if (state == AppLifecycleState.resumed ||
         state == AppLifecycleState.inactive) {
-      unawaited(WakelockPlus.enable());
+      unawaited(_setWakeLock(true));
+      return;
+    }
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(_saveProgress());
+      unawaited(_setWakeLock(false));
     }
   }
 
@@ -984,9 +1190,170 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _positionSub?.cancel();
     _compassSub?.cancel();
     _renderTimer?.cancel();
-    unawaited(WakelockPlus.disable());
+    unawaited(_setWakeLock(false));
     _searchController.dispose();
     super.dispose();
+  }
+
+
+  Future<void> _setWakeLock(bool enabled) async {
+    try {
+      if (enabled) {
+        await WakelockPlus.enable();
+      } else {
+        await WakelockPlus.disable();
+      }
+    } catch (_) {
+      // Native FLAG_KEEP_SCREEN_ON is also applied by the Android build.
+      // A plugin failure must never crash navigation.
+    }
+  }
+
+  Future<void> _loadProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _xp = (prefs.getInt('progress_xp') ?? 0).clamp(0, 1000000).toInt();
+      _completedTrips =
+          (prefs.getInt('progress_trips') ?? 0).clamp(0, 100000).toInt();
+      _totalDrivenKm =
+          (prefs.getDouble('progress_distance_km') ?? 0).clamp(0.0, 10000000.0).toDouble();
+      _reportedEvents =
+          (prefs.getInt('progress_reports') ?? 0).clamp(0, 100000).toInt();
+
+      final validRewardIds = gameRewards.map((reward) => reward.id).toSet();
+      final storedReward = prefs.getString('progress_reward') ?? 'starter';
+      _selectedRewardId =
+          validRewardIds.contains(storedReward) ? storedReward : 'starter';
+
+      final validThemeIds = gameThemes.map((theme) => theme.id).toSet();
+      final storedThemes =
+          prefs.getStringList('progress_themes') ?? <String>['crime_city'];
+      _usedThemes
+        ..clear()
+        ..addAll(storedThemes.where(validThemeIds.contains).take(gameThemes.length));
+      if (_usedThemes.isEmpty) _usedThemes.add('crime_city');
+
+      final validMissionIds = gameMissions.map((mission) => mission.id).toSet();
+      final storedMissions =
+          prefs.getStringList('progress_claimed') ?? const <String>[];
+      _claimedMissions
+        ..clear()
+        ..addAll(storedMissions.where(validMissionIds.contains).take(gameMissions.length));
+    });
+  }
+
+  Future<void> _saveProgress() async {
+    final prefs = await SharedPreferences.getInstance();
+    await Future.wait([
+      prefs.setInt('progress_xp', _xp),
+      prefs.setInt('progress_trips', _completedTrips),
+      prefs.setDouble('progress_distance_km', _totalDrivenKm),
+      prefs.setInt('progress_reports', _reportedEvents),
+      prefs.setString('progress_reward', _selectedRewardId),
+      prefs.setStringList('progress_themes', _usedThemes.toList()),
+      prefs.setStringList('progress_claimed', _claimedMissions.toList()),
+    ]);
+  }
+
+  double _missionValue(MissionSpec mission) {
+    switch (mission.metric) {
+      case MissionMetric.trips:
+        return _completedTrips.toDouble();
+      case MissionMetric.distanceKm:
+        return _totalDrivenKm;
+      case MissionMetric.reports:
+        return _reportedEvents.toDouble();
+      case MissionMetric.themes:
+        return _usedThemes.length.toDouble();
+    }
+  }
+
+  Future<void> _checkMissions() async {
+    final newlyCompleted = <MissionSpec>[];
+    for (final mission in gameMissions) {
+      if (_claimedMissions.contains(mission.id)) continue;
+      if (_missionValue(mission) >= mission.target) {
+        _claimedMissions.add(mission.id);
+        _xp += mission.rewardXp;
+        newlyCompleted.add(mission);
+      }
+    }
+    if (newlyCompleted.isEmpty) return;
+    if (mounted) setState(() {});
+    await _saveProgress();
+    for (final mission in newlyCompleted) {
+      _message('Mission complete: ${mission.title}  +${mission.rewardXp} XP');
+    }
+  }
+
+  RankSpec get _currentRank {
+    var rank = gameRanks.first;
+    for (final candidate in gameRanks) {
+      if (_xp >= candidate.minXp) rank = candidate;
+    }
+    return rank;
+  }
+
+  RankSpec? get _nextRank {
+    for (final rank in gameRanks) {
+      if (rank.minXp > _xp) return rank;
+    }
+    return null;
+  }
+
+  RewardSpec get _selectedReward {
+    return gameRewards.firstWhere(
+      (reward) => reward.id == _selectedRewardId && _xp >= reward.requiredXp,
+      orElse: () => gameRewards.first,
+    );
+  }
+
+  Future<void> _trackProgressDistance(LatLng rawPoint, Position p) async {
+    if (_route == null || _arrivalAwardedForCurrentRoute) {
+      _lastProgressPoint = null;
+      return;
+    }
+    if (!p.accuracy.isFinite || p.accuracy > 45 || _lastSpeedMps < 1.0) {
+      return;
+    }
+
+    final previous = _lastProgressPoint;
+    _lastProgressPoint = rawPoint;
+    if (previous == null) return;
+
+    final meters = Geolocator.distanceBetween(
+      previous.latitude,
+      previous.longitude,
+      rawPoint.latitude,
+      rawPoint.longitude,
+    );
+    // Ignore GPS drift and impossible one-sample jumps.
+    if (!meters.isFinite || meters < 2 || meters > 180) return;
+
+    final km = meters / 1000.0;
+    _totalDrivenKm += km;
+    _distanceSinceLastProgressSaveKm += km;
+    if (mounted) setState(() {});
+
+    if (_distanceSinceLastProgressSaveKm >= 0.25) {
+      _distanceSinceLastProgressSaveKm = 0;
+      await _saveProgress();
+      await _checkMissions();
+    }
+  }
+
+  Future<void> _recordTripArrival() async {
+    if (_arrivalAwardedForCurrentRoute) return;
+    _arrivalAwardedForCurrentRoute = true;
+    _completedTrips++;
+    _lastProgressPoint = null;
+    _remainingRouteDistanceMeters = 0;
+    _remainingRouteDurationSeconds = 0;
+    if (mounted) setState(() {});
+    await _saveProgress();
+    await _checkMissions();
+    _message('Trip complete • $_completedTrips total trips');
   }
 
   void _startCompass() {
@@ -1040,7 +1407,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   Future<void> _startLocation() async {
     if (!await Geolocator.isLocationServiceEnabled()) {
-      if (mounted) setState(() => _gpsIssue = 'יש להפעיל שירותי מיקום');
+      if (mounted) setState(() => _gpsIssue = 'Location services are turned off');
       return;
     }
 
@@ -1051,7 +1418,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
     if (permission == LocationPermission.denied ||
         permission == LocationPermission.deniedForever) {
-      if (mounted) setState(() => _gpsIssue = 'אין הרשאת GPS');
+      if (mounted) setState(() => _gpsIssue = 'Location permission is required');
       return;
     }
 
@@ -1082,6 +1449,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     if (map == null || !_styleReady) return;
 
     final rawPoint = LatLng(p.latitude, p.longitude);
+    unawaited(_trackProgressDistance(rawPoint, p));
     _targetHeading = _preferredHeading(p);
 
     // STRICT ROAD LOCK. The raw GPS point is never drawn. During navigation
@@ -1090,9 +1458,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     // while a fresh nearest-road match is requested.
     LatLng? displayPoint;
     final route = _route;
+    var routeMatchDistanceMeters = double.infinity;
     if (route != null && route.geometry.isNotEmpty) {
       final nearest = _nearestPointOnGeometry(rawPoint, route.geometry);
-      final maxSnapDistance = math.max(90.0, p.accuracy * 2.8);
+      routeMatchDistanceMeters = nearest.$2;
+      final maxSnapDistance =
+          math.min(120.0, math.max(55.0, p.accuracy * 2.2)).toDouble();
       if (nearest.$2 <= maxSnapDistance) {
         displayPoint = nearest.$1;
         _roadSnapPoint = displayPoint;
@@ -1113,6 +1484,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _targetDisplayPoint = displayPoint;
     _renderedDisplayPoint ??= displayPoint;
     if (_renderedHeading == 0) _renderedHeading = _targetHeading;
+    if (route != null) {
+      _lastRouteMatchDistanceMeters = routeMatchDistanceMeters;
+      _updateRouteProgress(displayPoint);
+    }
 
     unawaited(_maybeReroute(p));
     unawaited(_refreshTrafficSignalsIfNeeded(displayPoint));
@@ -1275,7 +1650,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final lastAt = _lastRoadSnapAt;
     final lastPoint = _lastRoadSnapRequestPoint;
     if (lastAt != null &&
-        now.difference(lastAt) < const Duration(milliseconds: 800) &&
+        now.difference(lastAt) < const Duration(seconds: 2) &&
         lastPoint != null &&
         Geolocator.distanceBetween(
               rawPoint.latitude,
@@ -1283,7 +1658,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               lastPoint.latitude,
               lastPoint.longitude,
             ) <
-            4) {
+            8) {
       return;
     }
 
@@ -1294,11 +1669,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       final snapped = await OpenMapServices.nearestRoad(rawPoint);
       if (snapped == null) return;
 
-      // Strict road lock prefers a confirmed drivable road over raw GPS.
-      // Reject only clearly implausible matches; for normal residential GPS
-      // drift this still allows the marker to snap out of a building and onto
-      // the nearest road.
-      if (snapped.distanceMeters > 750) return;
+      // Never accept a wildly distant road match. A bad GPS fix should freeze
+      // the marker at the last verified road position instead of teleporting it
+      // hundreds of metres away.
+      final accuracy = _lastPosition?.accuracy ?? 25.0;
+      final maxAllowedSnapMeters =
+          math.min(160.0, math.max(55.0, accuracy * 2.5)).toDouble();
+      if (!snapped.distanceMeters.isFinite ||
+          snapped.distanceMeters > maxAllowedSnapMeters) {
+        return;
+      }
       _roadSnapPoint = snapped.point;
       if (_lastPosition != null && mounted) {
         await _onPosition(_lastPosition!);
@@ -1500,17 +1880,110 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return bestIndex;
   }
 
+  void _prepareRouteProgressCache() {
+    final route = _route;
+    if (route == null || route.geometry.isEmpty) {
+      _routeRemainingGeometryMeters = const [];
+      _remainingRouteDistanceMeters = null;
+      _remainingRouteDurationSeconds = null;
+      _lastRouteVertexIndex = 0;
+      _lastRouteMatchDistanceMeters = double.infinity;
+      return;
+    }
+
+    final geometry = route.geometry;
+    final remaining = List<double>.filled(geometry.length, 0.0);
+    for (var i = geometry.length - 2; i >= 0; i--) {
+      remaining[i] = remaining[i + 1] +
+          Geolocator.distanceBetween(
+            geometry[i].latitude,
+            geometry[i].longitude,
+            geometry[i + 1].latitude,
+            geometry[i + 1].longitude,
+          );
+    }
+    _routeRemainingGeometryMeters = remaining;
+    _remainingRouteDistanceMeters = route.distanceMeters;
+    _remainingRouteDurationSeconds = route.durationSeconds;
+    _lastRouteVertexIndex = 0;
+    _lastRouteMatchDistanceMeters = double.infinity;
+  }
+
+  int _nearestRouteVertexIndexWindowed(
+    LatLng point,
+    List<LatLng> geometry,
+  ) {
+    if (geometry.isEmpty) return 0;
+    if (_lastRouteVertexIndex < 0 ||
+        _lastRouteVertexIndex >= geometry.length) {
+      return _nearestRouteVertexIndex(point, geometry);
+    }
+
+    final start = math.max(0, _lastRouteVertexIndex - 45);
+    final end = math.min(geometry.length - 1, _lastRouteVertexIndex + 220);
+    var bestIndex = start;
+    var bestDistance = double.infinity;
+    for (var i = start; i <= end; i++) {
+      final d = Geolocator.distanceBetween(
+        point.latitude,
+        point.longitude,
+        geometry[i].latitude,
+        geometry[i].longitude,
+      );
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestIndex = i;
+      }
+    }
+
+    // If the cached window no longer makes sense (reroute, GPS recovery, or a
+    // large jump), fall back to one full scan and re-seed the cache.
+    if (bestDistance > 180 || bestIndex == start || bestIndex == end) {
+      return _nearestRouteVertexIndex(point, geometry);
+    }
+    return bestIndex;
+  }
+
+  void _updateRouteProgress(LatLng vehiclePoint) {
+    final route = _route;
+    if (route == null || route.geometry.isEmpty) return;
+    if (_routeRemainingGeometryMeters.length != route.geometry.length) {
+      _prepareRouteProgressCache();
+    }
+    if (_routeRemainingGeometryMeters.isEmpty) return;
+
+    final index = _nearestRouteVertexIndexWindowed(vehiclePoint, route.geometry);
+    _lastRouteVertexIndex = index;
+
+    final geometryTotal = _routeRemainingGeometryMeters.first;
+    if (!geometryTotal.isFinite || geometryTotal <= 0) return;
+    final geometryRemaining = _routeRemainingGeometryMeters[index];
+    final ratio = (geometryRemaining / geometryTotal).clamp(0.0, 1.0).toDouble();
+    final nextDistance = route.distanceMeters * ratio;
+    final nextDuration = route.durationSeconds * ratio;
+
+    final distanceChanged = _remainingRouteDistanceMeters == null ||
+        (nextDistance - _remainingRouteDistanceMeters!).abs() >= 20;
+    final durationChanged = _remainingRouteDurationSeconds == null ||
+        (nextDuration - _remainingRouteDurationSeconds!).abs() >= 8;
+    _remainingRouteDistanceMeters = nextDistance;
+    _remainingRouteDurationSeconds = nextDuration;
+    if ((distanceChanged || durationChanged) && mounted) {
+      setState(() {});
+    }
+  }
+
   double? _routeCameraHeading(LatLng point) {
     final route = _route;
     if (route == null || route.geometry.length < 2) return null;
 
-    final nearest = _nearestPointOnGeometry(point, route.geometry);
-    // Do not force the old route direction when the car is genuinely far from
-    // it (for example during a reroute).
-    if (nearest.$2 > 55) return null;
+    // The expensive nearest-route scan is done on GPS updates, not on every
+    // render frame. This keeps the camera smooth on long routes.
+    if (_lastRouteMatchDistanceMeters > 65) return null;
 
     final geometry = route.geometry;
-    final index = _nearestRouteVertexIndex(point, geometry);
+    final index =
+        _lastRouteVertexIndex.clamp(0, geometry.length - 1).toInt();
     final startIndex = index >= geometry.length - 1 ? geometry.length - 2 : index;
     final endIndex = math.min(geometry.length - 1, startIndex + 3);
     final a = geometry[startIndex];
@@ -1559,11 +2032,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       // avoid the stop/start effect of the old ease-in/ease-out animations.
       await map.easeCamera(
         update,
-        duration: const Duration(milliseconds: 170),
+        duration: const Duration(milliseconds: 120),
         interpolation: CameraAnimationInterpolation.linear,
       );
     } finally {
-      await Future<void>.delayed(const Duration(milliseconds: 35));
       _programmaticCameraMove = false;
     }
   }
@@ -1594,6 +2066,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     if (distanceToDestination < 60) {
       _offRouteSamples = 0;
+      unawaited(_recordTripArrival());
       return;
     }
 
@@ -1637,6 +2110,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _selectedRouteIndex = 0;
         _following = true;
       });
+      _prepareRouteProgressCache();
       await _redrawRoute();
 
       // Return immediately to navigation view instead of showing another
@@ -1644,10 +2118,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (_lastPosition != null) {
         await _onPosition(_lastPosition!);
       }
-      _message('המסלול עודכן לפי המיקום החדש');
+      _message('Route updated from your current position');
     } catch (_) {
       // Keep the old route on screen and retry after new GPS samples.
-      _message('לא הצלחתי לחשב מסלול מחדש כרגע');
+      _message('Could not recalculate the route right now');
     } finally {
       if (mounted) {
         setState(() => _rerouting = false);
@@ -1655,6 +2129,32 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _rerouting = false;
       }
     }
+  }
+
+  void _onMapCreated(MapLibreMapController controller) {
+    _map = controller;
+    final revision = _styleRevision;
+    final customizedStyle = _resolvedMapStyle != _theme.mapStyle;
+
+    // If a generated game style is rejected by the native renderer, recover
+    // automatically to the known upstream style instead of leaving a black
+    // screen indefinitely. The second attempt is the provider's original style.
+    Future<void>.delayed(const Duration(seconds: 8), () {
+      if (!mounted || _styleReady || revision != _styleRevision) return;
+      if (!customizedStyle) {
+        _message('Map tiles are taking longer than expected to load.');
+        return;
+      }
+      setState(() {
+        _resolvedMapStyle = _theme.mapStyle;
+        _styleRevision++;
+        _map = null;
+        _vehicle = null;
+        _routeGlowLine = null;
+        _routeLine = null;
+        _trafficSignalCircles.clear();
+      });
+    });
   }
 
   Future<void> _onStyleLoaded() async {
@@ -1719,6 +2219,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   Future<void> _searchDestination() async {
     final query = _searchController.text.trim();
     if (query.isEmpty || _busy) return;
+    if (query.length > 160) {
+      _message('Search is too long. Please use a shorter place or address.');
+      return;
+    }
 
     FocusScope.of(context).unfocus();
     setState(() => _busy = true);
@@ -1737,7 +2241,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       if (!mounted) return;
 
       if (results.isEmpty) {
-        _message('לא נמצא יעד. נסה להוסיף עיר או רחוב.');
+        _message('No destination found. Try adding a city or street.');
         return;
       }
 
@@ -1746,16 +2250,16 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         showDragHandle: true,
         backgroundColor: _theme.panel,
         builder: (context) => Directionality(
-          textDirection: TextDirection.rtl,
+          textDirection: TextDirection.ltr,
           child: SafeArea(
             child: ListView(
               shrinkWrap: true,
               children: [
                 ListTile(
                   leading: Icon(Icons.search, color: _theme.accent),
-                  title: const Text(
-                    'תוצאות חיפוש',
-                    style: TextStyle(fontWeight: FontWeight.bold),
+                  title: Text(
+                    'Search results',
+                    style: gameDisplayStyle(fontSize: 24),
                   ),
                 ),
                 ...results.map(
@@ -1772,7 +2276,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         if (r.subtitle != null && r.subtitle!.isNotEmpty)
                           r.subtitle!,
                         if (r.distanceMeters != null)
-                          '${(r.distanceMeters! / 1000).toStringAsFixed(1)} ק״מ',
+                          '${(r.distanceMeters! / 1000).toStringAsFixed(1)} km',
                       ].join(' • '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -1784,7 +2288,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             crossAxisAlignment: CrossAxisAlignment.end,
                             children: [
                               Text(
-                                '${(r.durationSeconds! / 60).round()} דק׳',
+                                '${(r.durationSeconds! / 60).round()} min',
                                 style: TextStyle(
                                   color: _theme.accent,
                                   fontWeight: FontWeight.w900,
@@ -1811,9 +2315,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
       if (chosen != null) await _buildRoutes(chosen);
     } on TimeoutException {
-      _message('שירות החיפוש לא הגיב בזמן. נסה שוב.');
+      _message('Search timed out. Please try again.');
     } catch (_) {
-      _message('לא ניתן להתחבר לשירות החיפוש כרגע.');
+      _message('Search service is unavailable right now.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1823,7 +2327,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final p = _lastPosition;
     final map = _map;
     if (p == null || map == null || !_styleReady) {
-      _message('עדיין אין מיקום GPS מדויק.');
+      _message('Waiting for an accurate GPS position.');
       return;
     }
 
@@ -1834,6 +2338,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         LatLng(p.latitude, p.longitude),
         LatLng(destination.lat, destination.lon),
       );
+      if (!mounted || routes.isEmpty) return;
 
       setState(() {
         _destination = destination;
@@ -1841,7 +2346,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _selectedRouteIndex = 0;
         _following = false;
         _offRouteSamples = 0;
+        _arrivalAwardedForCurrentRoute = false;
+        _lastProgressPoint = null;
       });
+      _prepareRouteProgressCache();
       _searchController.clear();
 
       await _redrawRoute();
@@ -1854,9 +2362,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         if (_lastPosition != null) await _onPosition(_lastPosition!);
       }
     } on TimeoutException {
-      _message('חישוב המסלול ארך יותר מדי זמן. נסה שוב.');
+      _message('Route calculation timed out. Please try again.');
     } catch (_) {
-      _message('לא ניתן לחשב מסלול כרגע.');
+      _message('Could not calculate a route right now.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -1869,6 +2377,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _following = false;
       _offRouteSamples = 0;
     });
+    _prepareRouteProgressCache();
     await _redrawRoute();
     if (!mounted) return;
     setState(() => _following = true);
@@ -1890,6 +2399,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _routeLine = null;
       _trafficSignalCircles.clear();
     });
+    _usedThemes.add(theme.id);
+    unawaited(_saveProgress());
+    unawaited(_checkMissions());
     unawaited(_prepareThemeStyle(theme));
   }
 
@@ -1905,19 +2417,19 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         minChildSize: 0.35,
         maxChildSize: 0.92,
         builder: (context, scrollController) => Directionality(
-          textDirection: TextDirection.rtl,
+          textDirection: TextDirection.ltr,
           child: SafeArea(
             child: ListView(
               controller: scrollController,
               padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
               children: [
-                const Text(
+                Text(
                   'Game Themes',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
+                  style: gameDisplayStyle(fontSize: 28),
                 ),
                 const SizedBox(height: 4),
                 const Text(
-                  'גלול למעלה ולמטה ובחר את עולם המשחק של הניווט.',
+                  'Choose the visual world for your navigation.',
                 ),
                 const SizedBox(height: 14),
                 ...gameThemes.map(
@@ -1940,12 +2452,12 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       ),
                       title: Text(
                         theme.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
+                        style: gameDisplayStyle(fontSize: 20),
                       ),
                       subtitle: Text(theme.tagline),
                       trailing: theme.id == _theme.id
                           ? Icon(Icons.check_circle, color: theme.accent)
-                          : const Icon(Icons.chevron_left),
+                          : const Icon(Icons.chevron_right),
                       onTap: () => _changeTheme(theme),
                     ),
                   ),
@@ -1960,15 +2472,15 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
 
   void _showReportSheet() {
     const reports = <(IconData, String)>[
-      (Icons.traffic, 'פקק'),
-      (Icons.block, 'חסימת כביש'),
-      (Icons.car_crash, 'תאונה'),
-      (Icons.construction, 'עבודות בדרך'),
-      (Icons.warning_amber_rounded, 'מפגע בכביש'),
-      (Icons.car_repair, 'רכב תקוע'),
-      (Icons.water, 'הצפה'),
-      (Icons.traffic_outlined, 'רמזור תקול'),
-      (Icons.shield_outlined, 'פעילות אכיפה באזור'),
+      (Icons.traffic, 'Traffic jam'),
+      (Icons.block, 'Road closure'),
+      (Icons.car_crash, 'Crash'),
+      (Icons.construction, 'Roadworks'),
+      (Icons.warning_amber_rounded, 'Road hazard'),
+      (Icons.car_repair, 'Stopped vehicle'),
+      (Icons.water, 'Flooding'),
+      (Icons.traffic_outlined, 'Broken traffic light'),
+      (Icons.shield_outlined, 'Enforcement activity in the area'),
     ];
 
     showModalBottomSheet(
@@ -1977,7 +2489,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       isScrollControlled: true,
       backgroundColor: _theme.panel,
       builder: (context) => Directionality(
-        textDirection: TextDirection.rtl,
+        textDirection: TextDirection.ltr,
         child: SafeArea(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(20),
@@ -1989,9 +2501,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   children: [
                     Icon(Icons.campaign, color: _theme.accent),
                     const SizedBox(width: 8),
-                    const Text(
-                      'דיווח בדרך',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    Text(
+                      'Road report',
+                      style: gameDisplayStyle(fontSize: 26),
                     ),
                   ],
                 ),
@@ -2005,9 +2517,33 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           avatar: Icon(r.$1, size: 20, color: _theme.accent),
                           label: Text(r.$2),
                           onPressed: () {
-                            setState(() => _reports.add(CommunityReport(r.$2)));
+                            if (_lastSpeedMps > 1.5) {
+                              Navigator.pop(context);
+                              _message('For safety, add road reports only while stopped.');
+                              return;
+                            }
+                            final now = DateTime.now();
+                            final xpEligible =
+                                r.$2 != 'Enforcement activity in the area' &&
+                                (_lastXpEligibleReportAt == null ||
+                                    now.difference(_lastXpEligibleReportAt!) >=
+                                        const Duration(seconds: 60));
+                            setState(() {
+                              if (_reports.length >= 100) _reports.removeAt(0);
+                              _reports.add(CommunityReport(r.$2));
+                              if (xpEligible) {
+                                _reportedEvents++;
+                                _lastXpEligibleReportAt = now;
+                              }
+                            });
                             Navigator.pop(context);
-                            _message('דיווח “${r.$2}” נשמר בגרסת הניסוי.');
+                            unawaited(_saveProgress());
+                            if (xpEligible) unawaited(_checkMissions());
+                            _message(
+                              xpEligible
+                                  ? 'Report “${r.$2}” saved on this device.'
+                                  : 'Report saved. XP report cooldown is active.',
+                            );
                           },
                         ),
                       )
@@ -2015,13 +2551,329 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  'דיווחים שנוספו במכשיר: ${_reports.length}. בגרסת השרת נוסיף אימות “עדיין שם / כבר לא”, תפוגה אוטומטית וניקוד אמינות.',
+                  'Reports added on this device: ${_reports.length}. For safety, reports are enabled only while stopped. Server sync will later add verification, expiry and trust scoring.',
                 ),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+
+
+  void _showProgressSheet() {
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      backgroundColor: _theme.panel,
+      builder: (context) => DefaultTabController(
+        length: 4,
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.78,
+          minChildSize: 0.48,
+          maxChildSize: 0.94,
+          builder: (context, scrollController) => SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+                  child: _progressHeader(),
+                ),
+                TabBar(
+                  isScrollable: true,
+                  labelStyle: gameDisplayStyle(fontSize: 18),
+                  unselectedLabelStyle: gameDisplayStyle(
+                    fontSize: 18,
+                    color: _theme.foreground.withValues(alpha: 0.58),
+                  ),
+                  tabs: const [
+                    Tab(text: 'Missions'),
+                    Tab(text: 'Ranks'),
+                    Tab(text: 'Rewards'),
+                    Tab(text: 'Friends'),
+                  ],
+                ),
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      _missionsTab(scrollController),
+                      _ranksTab(),
+                      _rewardsTab(),
+                      _friendsTab(),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _progressHeader() {
+    final rank = _currentRank;
+    final next = _nextRank;
+    final base = rank.minXp;
+    final ceiling = next?.minXp ?? math.max(_xp, base + 1);
+    final progress = next == null
+        ? 1.0
+        : ((_xp - base) / math.max(1, ceiling - base)).clamp(0.0, 1.0).toDouble();
+
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 27,
+          backgroundColor: _theme.accent,
+          foregroundColor: Colors.black,
+          child: Icon(_selectedReward.icon, size: 28),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                rank.name,
+                style: gameDisplayStyle(fontSize: 28),
+              ),
+              Text(
+                '$_xp XP • ${_totalDrivenKm.toStringAsFixed(1)} km • $_completedTrips trips',
+                style: TextStyle(
+                  color: _theme.foreground.withValues(alpha: 0.72),
+                ),
+              ),
+              const SizedBox(height: 7),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(20),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 7,
+                  backgroundColor: Colors.white10,
+                  color: _theme.accent,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                next == null
+                    ? 'Maximum rank reached'
+                    : '${next.minXp - _xp} XP to ${next.name}',
+                style: const TextStyle(fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _missionsTab(ScrollController controller) {
+    return ListView(
+      controller: controller,
+      padding: const EdgeInsets.all(14),
+      children: [
+        Text(
+          'Missions complete automatically while you navigate. No interaction is required while driving.',
+          style: TextStyle(color: _theme.foreground.withValues(alpha: 0.72)),
+        ),
+        const SizedBox(height: 10),
+        ...gameMissions.map((mission) {
+          final value = _missionValue(mission);
+          final completed = _claimedMissions.contains(mission.id);
+          final progress = (value / mission.target).clamp(0.0, 1.0).toDouble();
+          final valueLabel = mission.metric == MissionMetric.distanceKm
+              ? '${math.min(value, mission.target).toStringAsFixed(1)} / ${mission.target.toStringAsFixed(0)} km'
+              : '${math.min(value, mission.target).toInt()} / ${mission.target.toInt()}';
+          return Card(
+            color: Colors.white.withValues(alpha: 0.045),
+            child: ListTile(
+              leading: CircleAvatar(
+                backgroundColor: completed
+                    ? _theme.accent
+                    : _theme.accent.withValues(alpha: 0.18),
+                foregroundColor: completed ? Colors.black : _theme.accent,
+                child: Icon(completed ? Icons.check : mission.icon),
+              ),
+              title: Text(
+                mission.title,
+                style: gameDisplayStyle(fontSize: 20),
+              ),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(mission.description),
+                  const SizedBox(height: 7),
+                  LinearProgressIndicator(
+                    value: completed ? 1 : progress,
+                    minHeight: 5,
+                    backgroundColor: Colors.white10,
+                    color: _theme.accent,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(valueLabel, style: const TextStyle(fontSize: 11)),
+                ],
+              ),
+              trailing: Text(
+                '+${mission.rewardXp} XP',
+                style: gameDisplayStyle(
+                  fontSize: 18,
+                  color: _theme.accent,
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _ranksTab() {
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: gameRanks.map((rank) {
+        final unlocked = _xp >= rank.minXp;
+        final current = rank.name == _currentRank.name;
+        return ListTile(
+          leading: CircleAvatar(
+            backgroundColor:
+                unlocked ? _theme.accent : Colors.white.withValues(alpha: 0.08),
+            foregroundColor: unlocked ? Colors.black : Colors.white38,
+            child: Icon(rank.icon),
+          ),
+          title: Text(
+            rank.name,
+            style: gameDisplayStyle(
+              fontSize: current ? 22 : 19,
+              color: unlocked ? null : Colors.white38,
+            ),
+          ),
+          subtitle: Text('${rank.minXp} XP'),
+          trailing: current
+              ? Icon(Icons.radio_button_checked, color: _theme.accent)
+              : unlocked
+                  ? const Icon(Icons.check)
+                  : const Icon(Icons.lock_outline),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _rewardsTab() {
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        Text(
+          'Unlock profile icons as you rank up. Tap an unlocked reward to equip it.',
+          style: TextStyle(color: _theme.foreground.withValues(alpha: 0.72)),
+        ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: gameRewards.map((reward) {
+            final unlocked = _xp >= reward.requiredXp;
+            final selected = _selectedRewardId == reward.id;
+            return InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: unlocked
+                  ? () {
+                      setState(() => _selectedRewardId = reward.id);
+                      unawaited(_saveProgress());
+                      Navigator.pop(context);
+                      _message('${reward.name} equipped');
+                    }
+                  : null,
+              child: Container(
+                width: 112,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? _theme.accent.withValues(alpha: 0.18)
+                      : Colors.white.withValues(alpha: 0.045),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(
+                    color: selected ? _theme.accent : Colors.white12,
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    CircleAvatar(
+                      backgroundColor:
+                          unlocked ? _theme.accent : Colors.white12,
+                      foregroundColor:
+                          unlocked ? Colors.black : Colors.white30,
+                      child: Icon(unlocked ? reward.icon : Icons.lock),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      reward.name,
+                      textAlign: TextAlign.center,
+                      style: gameDisplayStyle(fontSize: 18),
+                    ),
+                    Text(
+                      reward.requiredXp == 0
+                          ? 'Unlocked'
+                          : '${reward.requiredXp} XP',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _friendsTab() {
+    return ListView(
+      padding: const EdgeInsets.all(18),
+      children: [
+        Icon(Icons.groups_2, size: 48, color: _theme.accent),
+        const SizedBox(height: 12),
+        Text(
+          'Friends Leaderboard',
+          textAlign: TextAlign.center,
+          style: gameDisplayStyle(fontSize: 28),
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'The ranking screen is ready, but real friend competition needs GameNav accounts and a backend so XP can sync securely between phones.',
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 18),
+        Card(
+          color: Colors.white.withValues(alpha: 0.045),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: _theme.accent,
+              foregroundColor: Colors.black,
+              child: Icon(_selectedReward.icon),
+            ),
+            title: Text(
+              'You',
+              style: gameDisplayStyle(fontSize: 20),
+            ),
+            subtitle: Text(_currentRank.name),
+            trailing: Text(
+              '$_xp XP',
+              style: TextStyle(
+                color: _theme.accent,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        const Text(
+          'Next backend step: player accounts, friend codes, weekly leagues, anti-cheat checks and synced rewards.',
+          textAlign: TextAlign.center,
+        ),
+      ],
     );
   }
 
@@ -2033,7 +2885,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       backgroundColor: _theme.panel,
       builder: (context) => StatefulBuilder(
         builder: (context, modalSetState) => Directionality(
-          textDirection: TextDirection.rtl,
+          textDirection: TextDirection.ltr,
           child: SafeArea(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(10, 0, 10, 24),
@@ -2043,43 +2895,43 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   ListTile(
                     leading: Icon(Icons.alt_route, color: _theme.accent),
                     title: const Text(
-                      'הימנעות והעדפות מסלול',
+                      'Route preferences',
                       style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold),
                     ),
                     subtitle: const Text(
-                      'ההעדפות נשמרות באפליקציה; שילוב מלא בחישוב המסלול יגיע עם מנוע GameNav backend.',
+                      'Preferences are stored locally. Full route weighting will be connected to the GameNav backend.',
                     ),
                   ),
-                  _avoidSwitch('הימנע מפקקים', avoidTraffic, (v) {
+                  _avoidSwitch('Avoid traffic', avoidTraffic, (v) {
                     modalSetState(() => avoidTraffic = v);
                     setState(() => avoidTraffic = v);
                   }),
-                  _avoidSwitch('הימנע מחסימות', avoidClosures, (v) {
+                  _avoidSwitch('Avoid road closures', avoidClosures, (v) {
                     modalSetState(() => avoidClosures = v);
                     setState(() => avoidClosures = v);
                   }),
-                  _avoidSwitch('הימנע מעבודות בדרך', avoidRoadworks, (v) {
+                  _avoidSwitch('Avoid roadworks', avoidRoadworks, (v) {
                     modalSetState(() => avoidRoadworks = v);
                     setState(() => avoidRoadworks = v);
                   }),
-                  _avoidSwitch('הימנע ממפגעים', avoidHazards, (v) {
+                  _avoidSwitch('Avoid hazards', avoidHazards, (v) {
                     modalSetState(() => avoidHazards = v);
                     setState(() => avoidHazards = v);
                   }),
-                  _avoidSwitch('הימנע מכבישי אגרה', avoidTolls, (v) {
+                  _avoidSwitch('Avoid toll roads', avoidTolls, (v) {
                     modalSetState(() => avoidTolls = v);
                     setState(() => avoidTolls = v);
                   }),
-                  _avoidSwitch('הימנע מכבישים לא סלולים', avoidUnpaved, (v) {
+                  _avoidSwitch('Avoid unpaved roads', avoidUnpaved, (v) {
                     modalSetState(() => avoidUnpaved = v);
                     setState(() => avoidUnpaved = v);
                   }),
                   const Divider(),
-                  _avoidSwitch('העדף כבישים ראשיים', preferMainRoads, (v) {
+                  _avoidSwitch('Prefer main roads', preferMainRoads, (v) {
                     modalSetState(() => preferMainRoads = v);
                     setState(() => preferMainRoads = v);
                   }),
-                  _avoidSwitch('העדף מסלול רגוע', preferQuietRoads, (v) {
+                  _avoidSwitch('Prefer quieter routes', preferQuietRoads, (v) {
                     modalSetState(() => preferQuietRoads = v);
                     setState(() => preferQuietRoads = v);
                   }),
@@ -2111,19 +2963,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
     final hour = arrival.hour.toString().padLeft(2, '0');
     final minute = arrival.minute.toString().padLeft(2, '0');
-    return 'הגעה $hour:$minute';
+    return 'Arrive $hour:$minute';
   }
 
   String _routeSummary(RouteResult route) {
     final min = (route.durationSeconds / 60).round();
-    return '$min דק׳ • ${_arrivalTime(route.durationSeconds)}';
+    return '$min min • ${_arrivalTime(route.durationSeconds)}';
   }
 
   Widget _navigationSummary() {
     final route = _route;
     if (route == null) return const SizedBox.shrink();
-    final km = route.distanceMeters / 1000;
-    final min = (route.durationSeconds / 60).round();
+    final remainingDistance =
+        _remainingRouteDistanceMeters ?? route.distanceMeters;
+    final remainingDuration =
+        _remainingRouteDurationSeconds ?? route.durationSeconds;
+    final km = remainingDistance / 1000;
+    final min = (remainingDuration / 60).ceil();
 
     // Compact top HUD. Keeping ETA away from the lower navigation viewport
     // guarantees it can never cover the vehicle marker.
@@ -2137,7 +2993,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              '$min דק׳',
+              '$min min',
               style: TextStyle(
                 color: _theme.accent,
                 fontSize: 17,
@@ -2146,7 +3002,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 9),
             Text(
-              _arrivalTime(route.durationSeconds),
+              _arrivalTime(remainingDuration),
               style: const TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w800,
@@ -2154,7 +3010,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
             const SizedBox(width: 8),
             Text(
-              '${km.toStringAsFixed(1)} ק״מ',
+              '${km.toStringAsFixed(1)} km',
               style: TextStyle(
                 fontSize: 12,
                 color: _theme.foreground.withValues(alpha: 0.72),
@@ -2192,7 +3048,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 color: selected ? Colors.black : Colors.white,
                 fontWeight: FontWeight.bold,
               ),
-              label: Text('דרך ${index + 1} • ${_routeSummary(_routeOptions[index])}'),
+              label: Text('Route ${index + 1} • ${_routeSummary(_routeOptions[index])}'),
               onSelected: (_) => _selectRoute(index),
             ),
           );
@@ -2208,7 +3064,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         : LatLng(_lastPosition!.latitude, _lastPosition!.longitude);
 
     return Directionality(
-      textDirection: TextDirection.rtl,
+      textDirection: TextDirection.ltr,
       child: Scaffold(
         backgroundColor: _theme.panel,
         body: Stack(
@@ -2221,7 +3077,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   target: initialTarget,
                   zoom: _lastPosition == null ? 9 : 16,
                 ),
-                onMapCreated: (c) => _map = c,
+                onMapCreated: _onMapCreated,
                 onStyleLoadedCallback: _onStyleLoaded,
                 onCameraMove: _handleCameraMove,
                 compassEnabled: false,
@@ -2263,7 +3119,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         onSubmitted: (_) => _searchDestination(),
                         style: TextStyle(color: _theme.foreground),
                         decoration: InputDecoration(
-                          hintText: 'לאן נוסעים?',
+                          hintText: 'Where to?',
                           hintStyle: TextStyle(
                             color: _theme.foreground.withValues(alpha: 0.65),
                           ),
@@ -2281,7 +3137,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   ),
                                 )
                               : IconButton(
-                                  icon: Icon(Icons.arrow_back, color: _theme.accent),
+                                  icon: Icon(Icons.arrow_forward, color: _theme.accent),
                                   onPressed: _searchDestination,
                                 ),
                           border: InputBorder.none,
@@ -2348,7 +3204,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                const Text('מחשב מסלול מחדש…'),
+                                const Text('Recalculating…'),
                               ],
                             ),
                           ),
@@ -2396,7 +3252,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                 ),
                                 const SizedBox(width: 8),
                                 Text(
-                                  'רמזור • ${_distanceToNextTrafficSignal!.round()} מ׳',
+                                  'Traffic light • ${_distanceToNextTrafficSignal!.round()} m',
                                   style: const TextStyle(
                                     fontWeight: FontWeight.w800,
                                   ),
@@ -2404,7 +3260,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                                 if (_nextTrafficSignal!.remainingSeconds != null) ...[
                                   const SizedBox(width: 8),
                                   Text(
-                                    '${_nextTrafficSignal!.remainingSeconds} שנ׳',
+                                    '${_nextTrafficSignal!.remainingSeconds} sec',
                                     style: TextStyle(
                                       color: _theme.accent,
                                       fontWeight: FontWeight.w900,
@@ -2423,6 +3279,42 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       children: [
                         Column(
                           children: [
+                            FloatingActionButton.small(
+                              heroTag: 'progress',
+                              backgroundColor: _theme.panel,
+                              foregroundColor: _theme.accent,
+                              onPressed: _showProgressSheet,
+                              child: Stack(
+                                clipBehavior: Clip.none,
+                                children: [
+                                  Icon(_selectedReward.icon),
+                                  if (_xp > 0)
+                                    Positioned(
+                                      right: -8,
+                                      top: -8,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 5,
+                                          vertical: 2,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: _theme.accent,
+                                          borderRadius: BorderRadius.circular(10),
+                                        ),
+                                        child: Text(
+                                          '$_xp',
+                                          style: const TextStyle(
+                                            color: Colors.black,
+                                            fontSize: 8,
+                                            fontWeight: FontWeight.w900,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
                             FloatingActionButton.small(
                               heroTag: 'themes',
                               backgroundColor: _theme.panel,
@@ -2461,7 +3353,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           onPressed: _showReportSheet,
                           icon: const Icon(Icons.campaign),
                           label: const Text(
-                            'דיווח',
+                            'Report',
                             style: TextStyle(fontWeight: FontWeight.bold),
                           ),
                         ),
