@@ -1,4 +1,4 @@
-name: Build GameNav APK
+name: Build GameNav APK (Audited)
 
 on:
   workflow_dispatch:
@@ -6,36 +6,48 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: gamenav-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
 
     steps:
       - name: Checkout GameNav
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
 
       - name: Setup Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5.6.0
         with:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - name: Setup Flutter 3.47.2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
         with:
           channel: stable
+          flutter-version: '3.47.2'
           cache: true
 
-      - name: Check Java and Flutter
+      - name: Verify toolchain
         run: |
+          set -euo pipefail
           java -version
           flutter --version
+          dart --version
 
-      # IMPORTANT: Create the Android shell OUTSIDE the repository.
-      # This prevents `flutter create` from replacing lib/main.dart
-      # with Flutter's default counter demo.
       - name: Generate Android shell safely
         run: |
+          set -euo pipefail
           rm -rf /tmp/gamenav_android_shell
           flutter create \
             --platforms=android \
@@ -47,29 +59,63 @@ jobs:
           cp -R /tmp/gamenav_android_shell/android ./android
           cp /tmp/gamenav_android_shell/.metadata ./.metadata
 
-      - name: Verify GameNav source was not overwritten
+      - name: Verify GameNav source and required assets
         run: |
+          set -euo pipefail
           test -f lib/main.dart
-          grep -q "class GameNavApp" lib/main.dart || {
-            echo "ERROR: lib/main.dart is not the GameNav source. Refusing to build Flutter demo app."
-            exit 1
-          }
-          grep -q "runApp(const GameNavApp())" lib/main.dart || {
-            echo "ERROR: GameNav entry point is missing."
-            exit 1
-          }
-          echo "GameNav source verified."
+          grep -q "class GameNavApp" lib/main.dart
+          grep -q "runApp(const GameNavApp())" lib/main.dart
+          test -f assets/icons/vehicle.png
+          test -f assets/fonts/PricedownBl.otf
+          test -f platform_overrides/AndroidManifest.xml
+          echo "GameNav source and assets verified."
 
-      - name: Get dependencies
-        run: flutter pub get
+      - name: Reject obvious secrets and cleartext URLs
+        run: |
+          set -euo pipefail
+          if grep -R -nE 'http://' lib; then
+            echo "ERROR: Cleartext HTTP URL found in application source."
+            exit 1
+          fi
+          if grep -R -nE '(sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|gh[pousr]_[A-Za-z0-9_]{20,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY)' lib; then
+            echo "ERROR: Possible secret/private key found in application source."
+            exit 1
+          fi
+          echo "Basic source security scan passed."
+
+      - name: Get dependencies and fail on known advisories
+        run: |
+          set -euo pipefail
+          if [ -f pubspec.lock ]; then
+            flutter pub get --enforce-lockfile 2>&1 | tee /tmp/pub-get.log
+          else
+            echo "NOTICE: No pubspec.lock is committed yet; creating one for this build."
+            flutter pub get 2>&1 | tee /tmp/pub-get.log
+          fi
+          if grep -Eqi 'affected by advisory|dependencies are affected by security advisories' /tmp/pub-get.log; then
+            echo "ERROR: Dart/Flutter dependency security advisory detected."
+            exit 1
+          fi
+
+      - name: Verify direct dependency versions
+        run: |
+          set -euo pipefail
+          flutter pub deps --style=compact > /tmp/pub-deps.txt
+          grep -F "maplibre_gl 0.26.2" /tmp/pub-deps.txt
+          grep -F "geolocator 14.0.3" /tmp/pub-deps.txt
+          grep -F "http 1.5.0" /tmp/pub-deps.txt
+          grep -F "flutter_compass 0.8.1" /tmp/pub-deps.txt
+          grep -F "wakelock_plus 1.7.0" /tmp/pub-deps.txt
+          grep -F "shared_preferences 2.5.5" /tmp/pub-deps.txt
 
       - name: Force Android screen to stay on
         run: |
+          set -euo pipefail
           MAIN_ACTIVITY="$(find android/app/src/main/kotlin -name MainActivity.kt | head -n 1)"
           test -n "$MAIN_ACTIVITY"
           PACKAGE_LINE="$(grep '^package ' "$MAIN_ACTIVITY" | head -n 1)"
           test -n "$PACKAGE_LINE"
-          cat > "$MAIN_ACTIVITY" <<EOF
+          cat > "$MAIN_ACTIVITY" <<EOF2
           $PACKAGE_LINE
 
           import android.os.Bundle
@@ -87,28 +133,35 @@ jobs:
                   window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
               }
           }
-          EOF
+          EOF2
           echo "Patched $MAIN_ACTIVITY with FLAG_KEEP_SCREEN_ON"
 
-      - name: Apply Android permissions
+      - name: Apply hardened Android manifest
         run: |
-          test -f platform_overrides/AndroidManifest.xml
+          set -euo pipefail
           cp platform_overrides/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          grep -q 'android:usesCleartextTraffic="false"' android/app/src/main/AndroidManifest.xml
+          grep -q 'android:allowBackup="false"' android/app/src/main/AndroidManifest.xml
 
       - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze --no-fatal-infos
 
-      - name: Build APK
+      - name: Build release APK
         run: flutter build apk --release
 
       - name: Verify APK
         run: |
+          set -euo pipefail
           test -f build/app/outputs/flutter-apk/app-release.apk
           ls -lh build/app/outputs/flutter-apk/app-release.apk
+          sha256sum build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Upload APK and dependency lock
+        uses: actions/upload-artifact@v6.0.0
         with:
-          name: GameNav-APK-v0.4.7
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: GameNav-APK-v0.5.2-audited
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            pubspec.lock
           if-no-files-found: error
+          retention-days: 14
