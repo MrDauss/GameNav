@@ -125,7 +125,7 @@ jobs:
           flutter pub deps --style=compact > /tmp/pub-deps.txt
           grep -F "maplibre_gl 0.26.2" /tmp/pub-deps.txt
           grep -F "geolocator 14.0.3" /tmp/pub-deps.txt
-          grep -F "http 1.5.0" /tmp/pub-deps.txt
+          grep -F "http 1.6.0" /tmp/pub-deps.txt
           grep -F "flutter_compass 0.8.1" /tmp/pub-deps.txt
           grep -F "wakelock_plus 1.7.0" /tmp/pub-deps.txt
           grep -F "shared_preferences 2.5.5" /tmp/pub-deps.txt
