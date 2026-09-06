@@ -7,7 +7,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: gamenav-apk-${{ github.ref }}
@@ -178,12 +178,39 @@ jobs:
           ls -lh build/app/outputs/flutter-apk/app-release.apk
           sha256sum build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Upload APK and dependency lock
-        uses: actions/upload-artifact@v6.0.0
-        with:
-          name: GameNav-APK-v0.5.2-audited
-          path: |
-            build/app/outputs/flutter-apk/app-release.apk
-            pubspec.lock
-          if-no-files-found: error
-          retention-days: 14
+      - name: Prepare direct APK download
+        run: |
+          set -euo pipefail
+          cp build/app/outputs/flutter-apk/app-release.apk GameNav-latest.apk
+          test -f GameNav-latest.apk
+          ls -lh GameNav-latest.apk
+          sha256sum GameNav-latest.apk
+
+      - name: Publish direct APK in GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="latest-build"
+
+          # Recreate the fixed release/tag so it always points at this exact build.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+
+          gh release create "$TAG" GameNav-latest.apk \
+            --target "$GITHUB_SHA" \
+            --title "GameNav Latest APK" \
+            --notes "Automatic GameNav APK build from commit $GITHUB_SHA."
+
+          echo "Direct APK release published."
+
+      - name: Add direct APK link to build summary
+        run: |
+          {
+            echo "## GameNav APK ready"
+            echo
+            echo "[Download GameNav-latest.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/latest-build/GameNav-latest.apk)"
+            echo
+            echo "This link downloads the APK directly, not a ZIP artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
