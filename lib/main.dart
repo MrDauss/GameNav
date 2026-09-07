@@ -14,18 +14,21 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 const String kGameDisplayFont = 'Pricedown';
+const String kFrontierDisplayFont = 'ChineseRocks';
 
 TextStyle gameDisplayStyle({
   double fontSize = 22,
   Color? color,
   double letterSpacing = 0.6,
+  String fontFamily = kGameDisplayFont,
+  double height = 0.95,
 }) {
   return TextStyle(
-    fontFamily: kGameDisplayFont,
+    fontFamily: fontFamily,
     fontSize: fontSize,
     color: color,
     letterSpacing: letterSpacing,
-    height: 0.95,
+    height: height,
   );
 }
 
@@ -1222,6 +1225,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   RouteResult? get _route =>
       _routeOptions.isEmpty ? null : _routeOptions[_selectedRouteIndex];
 
+  bool get _isFrontierTheme => _theme.id == 'frontier';
+
+  TextStyle _displayStyle({
+    double fontSize = 22,
+    Color? color,
+    double letterSpacing = 0.6,
+  }) {
+    return gameDisplayStyle(
+      fontSize: fontSize,
+      color: color,
+      letterSpacing: _isFrontierTheme ? 0.18 : letterSpacing,
+      fontFamily: _isFrontierTheme ? kFrontierDisplayFont : kGameDisplayFont,
+      height: _isFrontierTheme ? 1.0 : 0.95,
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -2362,7 +2381,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                   leading: Icon(Icons.search, color: _theme.accent),
                   title: Text(
                     'Search results',
-                    style: gameDisplayStyle(fontSize: 24),
+                    style: _displayStyle(fontSize: 24),
                   ),
                 ),
                 ...results.map(
@@ -2528,7 +2547,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               children: [
                 Text(
                   'Game Themes',
-                  style: gameDisplayStyle(fontSize: 28),
+                  style: _displayStyle(fontSize: 28),
                 ),
                 const SizedBox(height: 4),
                 const Text(
@@ -2555,7 +2574,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       ),
                       title: Text(
                         theme.name,
-                        style: gameDisplayStyle(fontSize: 20),
+                        style: gameDisplayStyle(
+                          fontSize: 20,
+                          fontFamily: theme.id == 'frontier'
+                              ? kFrontierDisplayFont
+                              : kGameDisplayFont,
+                          letterSpacing: theme.id == 'frontier' ? 0.18 : 0.6,
+                          height: theme.id == 'frontier' ? 1.0 : 0.95,
+                        ),
                       ),
                       subtitle: Text(theme.tagline),
                       trailing: theme.id == _theme.id
@@ -2606,7 +2632,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     const SizedBox(width: 8),
                     Text(
                       'Road report',
-                      style: gameDisplayStyle(fontSize: 26),
+                      style: _displayStyle(fontSize: 26),
                     ),
                   ],
                 ),
@@ -2687,8 +2713,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
                 TabBar(
                   isScrollable: true,
-                  labelStyle: gameDisplayStyle(fontSize: 18),
-                  unselectedLabelStyle: gameDisplayStyle(
+                  labelStyle: _displayStyle(fontSize: 18),
+                  unselectedLabelStyle: _displayStyle(
                     fontSize: 18,
                     color: _theme.foreground.withValues(alpha: 0.58),
                   ),
@@ -2741,7 +2767,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             children: [
               Text(
                 rank.name,
-                style: gameDisplayStyle(fontSize: 28),
+                style: _displayStyle(fontSize: 28),
               ),
               Text(
                 '$_xp XP • ${_totalDrivenKm.toStringAsFixed(1)} km • $_completedTrips trips',
@@ -2802,7 +2828,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
               title: Text(
                 mission.title,
-                style: gameDisplayStyle(fontSize: 20),
+                style: _displayStyle(fontSize: 20),
               ),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2821,7 +2847,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               ),
               trailing: Text(
                 '+${mission.rewardXp} XP',
-                style: gameDisplayStyle(
+                style: _displayStyle(
                   fontSize: 18,
                   color: _theme.accent,
                 ),
@@ -2848,7 +2874,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           ),
           title: Text(
             rank.name,
-            style: gameDisplayStyle(
+            style: _displayStyle(
               fontSize: current ? 22 : 19,
               color: unlocked ? null : Colors.white38,
             ),
@@ -2914,7 +2940,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     Text(
                       reward.name,
                       textAlign: TextAlign.center,
-                      style: gameDisplayStyle(fontSize: 18),
+                      style: _displayStyle(fontSize: 18),
                     ),
                     Text(
                       reward.requiredXp == 0
@@ -2941,7 +2967,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         Text(
           'Friends Leaderboard',
           textAlign: TextAlign.center,
-          style: gameDisplayStyle(fontSize: 28),
+          style: _displayStyle(fontSize: 28),
         ),
         const SizedBox(height: 8),
         const Text(
@@ -2959,7 +2985,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             ),
             title: Text(
               'You',
-              style: gameDisplayStyle(fontSize: 20),
+              style: _displayStyle(fontSize: 20),
             ),
             subtitle: Text(_currentRank.name),
             trailing: Text(
