@@ -170,14 +170,12 @@ jobs:
           GAMENAV_KEYSTORE_BASE64: ${{ secrets.GAMENAV_KEYSTORE_BASE64 }}
           GAMENAV_KEYSTORE_PASSWORD: ${{ secrets.GAMENAV_KEYSTORE_PASSWORD }}
           GAMENAV_KEY_ALIAS: ${{ secrets.GAMENAV_KEY_ALIAS }}
-          GAMENAV_KEY_PASSWORD: ${{ secrets.GAMENAV_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
           [ -n "$GAMENAV_KEYSTORE_BASE64" ] || { echo "::error::Missing GitHub secret GAMENAV_KEYSTORE_BASE64"; exit 1; }
           [ -n "$GAMENAV_KEYSTORE_PASSWORD" ] || { echo "::error::Missing GitHub secret GAMENAV_KEYSTORE_PASSWORD"; exit 1; }
           [ -n "$GAMENAV_KEY_ALIAS" ] || { echo "::error::Missing GitHub secret GAMENAV_KEY_ALIAS"; exit 1; }
-          [ -n "$GAMENAV_KEY_PASSWORD" ] || { echo "::error::Missing GitHub secret GAMENAV_KEY_PASSWORD"; exit 1; }
 
           printf '%s' "$GAMENAV_KEYSTORE_BASE64" | base64 --decode > android/app/gamenav-release.jks
           test -s android/app/gamenav-release.jks
@@ -186,6 +184,21 @@ jobs:
             -keystore android/app/gamenav-release.jks \
             -storepass "$GAMENAV_KEYSTORE_PASSWORD" \
             -alias "$GAMENAV_KEY_ALIAS" >/dev/null
+
+          # The generated keystore is PKCS12. Its private-key password is the
+          # same as the store password. Verify the private key can actually sign
+          # before Gradle spends several minutes building the APK.
+          rm -rf /tmp/gamenav-signing-test
+          mkdir -p /tmp/gamenav-signing-test
+          printf 'GameNav signing preflight' > /tmp/gamenav-signing-test/payload.txt
+          (cd /tmp/gamenav-signing-test && jar cf payload.jar payload.txt)
+          jarsigner \
+            -keystore android/app/gamenav-release.jks \
+            -storepass "$GAMENAV_KEYSTORE_PASSWORD" \
+            -keypass "$GAMENAV_KEYSTORE_PASSWORD" \
+            /tmp/gamenav-signing-test/payload.jar \
+            "$GAMENAV_KEY_ALIAS" >/dev/null
+          echo "Signing key preflight passed."
 
           python3 - <<'PY_SIGN'
           from pathlib import Path
@@ -202,7 +215,7 @@ jobs:
                   storeFile = file("gamenav-release.jks")
                   storePassword = System.getenv("GAMENAV_KEYSTORE_PASSWORD")
                   keyAlias = System.getenv("GAMENAV_KEY_ALIAS")
-                  keyPassword = System.getenv("GAMENAV_KEY_PASSWORD")
+                  keyPassword = System.getenv("GAMENAV_KEYSTORE_PASSWORD")
               }
           }
 
@@ -222,7 +235,6 @@ jobs:
         env:
           GAMENAV_KEYSTORE_PASSWORD: ${{ secrets.GAMENAV_KEYSTORE_PASSWORD }}
           GAMENAV_KEY_ALIAS: ${{ secrets.GAMENAV_KEY_ALIAS }}
-          GAMENAV_KEY_PASSWORD: ${{ secrets.GAMENAV_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 1000))
