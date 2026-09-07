@@ -165,18 +165,86 @@ jobs:
           grep -q 'android:usesCleartextTraffic="false"' android/app/src/main/AndroidManifest.xml
           grep -q 'android:allowBackup="false"' android/app/src/main/AndroidManifest.xml
 
+      - name: Configure permanent release signing
+        env:
+          GAMENAV_KEYSTORE_BASE64: ${{ secrets.GAMENAV_KEYSTORE_BASE64 }}
+          GAMENAV_KEYSTORE_PASSWORD: ${{ secrets.GAMENAV_KEYSTORE_PASSWORD }}
+          GAMENAV_KEY_ALIAS: ${{ secrets.GAMENAV_KEY_ALIAS }}
+          GAMENAV_KEY_PASSWORD: ${{ secrets.GAMENAV_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          [ -n "$GAMENAV_KEYSTORE_BASE64" ] || { echo "::error::Missing GitHub secret GAMENAV_KEYSTORE_BASE64"; exit 1; }
+          [ -n "$GAMENAV_KEYSTORE_PASSWORD" ] || { echo "::error::Missing GitHub secret GAMENAV_KEYSTORE_PASSWORD"; exit 1; }
+          [ -n "$GAMENAV_KEY_ALIAS" ] || { echo "::error::Missing GitHub secret GAMENAV_KEY_ALIAS"; exit 1; }
+          [ -n "$GAMENAV_KEY_PASSWORD" ] || { echo "::error::Missing GitHub secret GAMENAV_KEY_PASSWORD"; exit 1; }
+
+          printf '%s' "$GAMENAV_KEYSTORE_BASE64" | base64 --decode > android/app/gamenav-release.jks
+          test -s android/app/gamenav-release.jks
+
+          keytool -list \
+            -keystore android/app/gamenav-release.jks \
+            -storepass "$GAMENAV_KEYSTORE_PASSWORD" \
+            -alias "$GAMENAV_KEY_ALIAS" >/dev/null
+
+          python3 - <<'PY_SIGN'
+          from pathlib import Path
+          p = Path('android/app/build.gradle.kts')
+          s = p.read_text()
+          debug_line = 'signingConfig = signingConfigs.getByName("debug")'
+          if debug_line not in s:
+              raise SystemExit('Expected Flutter debug signing line was not found; refusing to patch blindly.')
+          build_types = '    buildTypes {'
+          if build_types not in s:
+              raise SystemExit('buildTypes block not found in android/app/build.gradle.kts')
+          signing_block = '''    signingConfigs {
+              create("release") {
+                  storeFile = file("gamenav-release.jks")
+                  storePassword = System.getenv("GAMENAV_KEYSTORE_PASSWORD")
+                  keyAlias = System.getenv("GAMENAV_KEY_ALIAS")
+                  keyPassword = System.getenv("GAMENAV_KEY_PASSWORD")
+              }
+          }
+
+          '''
+          s = s.replace(build_types, signing_block + build_types, 1)
+          s = s.replace(debug_line, 'signingConfig = signingConfigs.getByName("release")', 1)
+          p.write_text(s)
+          PY_SIGN
+
+          grep -Fq 'signingConfigs.getByName("release")' android/app/build.gradle.kts
+          echo "Permanent GameNav release signing configured."
+
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
-      - name: Build release APK
-        run: flutter build apk --release
-
-      - name: Verify APK
+      - name: Build signed release APK
+        env:
+          GAMENAV_KEYSTORE_PASSWORD: ${{ secrets.GAMENAV_KEYSTORE_PASSWORD }}
+          GAMENAV_KEY_ALIAS: ${{ secrets.GAMENAV_KEY_ALIAS }}
+          GAMENAV_KEY_PASSWORD: ${{ secrets.GAMENAV_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          test -f build/app/outputs/flutter-apk/app-release.apk
-          ls -lh build/app/outputs/flutter-apk/app-release.apk
-          sha256sum build/app/outputs/flutter-apk/app-release.apk
+          BUILD_NUMBER=$((GITHUB_RUN_NUMBER + 1000))
+          echo "Android versionCode: $BUILD_NUMBER"
+          flutter build apk --release --build-number="$BUILD_NUMBER"
+
+      - name: Verify APK signature and package
+        run: |
+          set -euo pipefail
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          test -f "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          AAPT="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -type f -name aapt | sort -V | tail -n 1)"
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump badging "$APK" | grep -m1 '^package:'
+          fi
 
       - name: Prepare direct APK download
         run: |
@@ -201,7 +269,7 @@ jobs:
           gh release create "$TAG" GameNav-latest.apk \
             --target "$GITHUB_SHA" \
             --title "GameNav Latest APK" \
-            --notes "Automatic GameNav APK build from commit $GITHUB_SHA."
+            --notes "Permanently signed GameNav APK from commit $GITHUB_SHA. Future builds using the same signing key can update this install in place."
 
           echo "Direct APK release published."
 
@@ -212,5 +280,5 @@ jobs:
             echo
             echo "[Download GameNav-latest.apk](https://github.com/${GITHUB_REPOSITORY}/releases/download/latest-build/GameNav-latest.apk)"
             echo
-            echo "This link downloads the APK directly, not a ZIP artifact."
+            echo "This APK is signed with the permanent GameNav release key and future builds can update it in place."
           } >> "$GITHUB_STEP_SUMMARY"
