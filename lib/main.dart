@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:flutter/services.dart';
@@ -253,6 +255,18 @@ class GameStyleBuilder {
         paint['text-color'] = palette.label;
         paint['text-halo-color'] = palette.labelHalo;
         paint['text-halo-width'] = 1.2;
+
+        // Force map labels to English/Latin instead of the local-language
+        // fallback used by the upstream style. We rewrite only name-based
+        // text expressions, so motorway refs, house numbers and other symbol
+        // content continue to work normally.
+        final layoutRaw = raw['layout'];
+        if (layoutRaw is Map<String, dynamic> &&
+            layoutRaw.containsKey('text-field')) {
+          layoutRaw['text-field'] =
+              _forceEnglishLabelExpression(layoutRaw['text-field']);
+        }
+
         if (theme.id == 'frontier') {
           paint['icon-opacity'] = 0.72;
         } else if (theme.id == 'cyber_grid') {
@@ -277,6 +291,60 @@ class GameStyleBuilder {
     final result = jsonEncode(decoded);
     _cache[theme.id] = result;
     return result;
+  }
+
+  static List<dynamic> _englishNameExpression() => <dynamic>[
+        'coalesce',
+        <dynamic>['get', 'name:en'],
+        <dynamic>['get', 'name_en'],
+        <dynamic>['get', 'name:latin'],
+        <dynamic>['get', 'name_latin'],
+        <dynamic>['get', 'name:latinized'],
+        <dynamic>['get', 'name_int'],
+        '',
+      ];
+
+  static bool _isNameProperty(String key) {
+    final normalized = key.toLowerCase().trim();
+    return normalized == 'name' ||
+        normalized == 'name_local' ||
+        normalized == 'name_int' ||
+        normalized == 'name_en' ||
+        normalized == 'name_latin' ||
+        normalized.startsWith('name:');
+  }
+
+  static dynamic _forceEnglishLabelExpression(dynamic value) {
+    if (value is String) {
+      final lower = value.toLowerCase();
+      if (lower.contains('{name}') ||
+          lower.contains('{name:') ||
+          lower == 'name') {
+        return _englishNameExpression();
+      }
+      return value;
+    }
+
+    if (value is List) {
+      if (value.length >= 2 &&
+          value.first == 'get' &&
+          value[1] is String &&
+          _isNameProperty(value[1] as String)) {
+        return _englishNameExpression();
+      }
+      return value.map<dynamic>(_forceEnglishLabelExpression).toList();
+    }
+
+    if (value is Map<String, dynamic>) {
+      return value.map<String, dynamic>(
+        (key, item) => MapEntry<String, dynamic>(
+          key,
+          _forceEnglishLabelExpression(item),
+        ),
+      );
+    }
+
+    return value;
   }
 
   static bool _containsAny(String value, List<String> needles) {
@@ -1113,6 +1181,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _mapVisible = false;
   bool _following = true;
   bool _programmaticCameraMove = false;
+  int? _mapGesturePointer;
+  Offset? _mapGestureStart;
   bool _busy = false;
   bool _rerouting = false;
   int _offRouteSamples = 0;
@@ -2038,6 +2108,39 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     } finally {
       _programmaticCameraMove = false;
     }
+  }
+
+  void _handleMapPointerDown(PointerDownEvent event) {
+    if (!_following) return;
+    _mapGesturePointer = event.pointer;
+    _mapGestureStart = event.position;
+  }
+
+  void _handleMapPointerMove(PointerMoveEvent event) {
+    if (!_following ||
+        _mapGesturePointer != event.pointer ||
+        _mapGestureStart == null) {
+      return;
+    }
+
+    // Do not disable navigation-follow mode for a simple tap. A deliberate
+    // drag of roughly one fingertip is enough to hand full camera control to
+    // the user. The location button can enable follow mode again.
+    if ((event.position - _mapGestureStart!).distance < 7.0) return;
+
+    _mapGesturePointer = null;
+    _mapGestureStart = null;
+    if (mounted) {
+      setState(() => _following = false);
+    } else {
+      _following = false;
+    }
+  }
+
+  void _handleMapPointerEnd(PointerEvent event) {
+    if (_mapGesturePointer != event.pointer) return;
+    _mapGesturePointer = null;
+    _mapGestureStart = null;
   }
 
   void _handleCameraMove(CameraPosition _) {
@@ -3070,17 +3173,35 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         body: Stack(
           children: [
             if (_mapStylePrepared)
-              MapLibreMap(
-                key: ValueKey('${_theme.id}:$_styleRevision'),
-                styleString: _resolvedMapStyle,
-                initialCameraPosition: CameraPosition(
-                  target: initialTarget,
-                  zoom: _lastPosition == null ? 9 : 16,
+              Listener(
+                behavior: HitTestBehavior.translucent,
+                onPointerDown: _handleMapPointerDown,
+                onPointerMove: _handleMapPointerMove,
+                onPointerUp: _handleMapPointerEnd,
+                onPointerCancel: _handleMapPointerEnd,
+                child: MapLibreMap(
+                  key: ValueKey('${_theme.id}:$_styleRevision'),
+                  styleString: _resolvedMapStyle,
+                  initialCameraPosition: CameraPosition(
+                    target: initialTarget,
+                    zoom: _lastPosition == null ? 9 : 16,
+                  ),
+                  onMapCreated: _onMapCreated,
+                  onStyleLoadedCallback: _onStyleLoaded,
+                  onCameraMove: _handleCameraMove,
+                  gestureRecognizers: <Factory<OneSequenceGestureRecognizer>>{
+                    Factory<OneSequenceGestureRecognizer>(
+                      () => EagerGestureRecognizer(),
+                    ),
+                  },
+                  dragEnabled: true,
+                  scrollGesturesEnabled: true,
+                  zoomGesturesEnabled: true,
+                  rotateGesturesEnabled: true,
+                  tiltGesturesEnabled: true,
+                  trackCameraPosition: true,
+                  compassEnabled: false,
                 ),
-                onMapCreated: _onMapCreated,
-                onStyleLoadedCallback: _onStyleLoaded,
-                onCameraMove: _handleCameraMove,
-                compassEnabled: false,
               )
             else
               Positioned.fill(
