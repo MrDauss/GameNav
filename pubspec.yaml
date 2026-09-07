@@ -1,7 +1,7 @@
 name: gamenav
 description: Game-style GPS navigation prototype
 publish_to: 'none'
-version: 0.5.3+12
+version: 0.5.8+14
 
 environment:
   sdk: '>=3.13.0 <4.0.0'
@@ -30,3 +30,6 @@ flutter:
     - family: Pricedown
       fonts:
         - asset: assets/fonts/PricedownBl.otf
+    - family: ChineseRocks
+      fonts:
+        - asset: "assets/fonts/chinese rocks rg.ttf"
