@@ -1224,7 +1224,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   String? _searchError;
   List<SearchResult> _searchResults = const [];
   DateTime? _lastCompassUiAt;
-  bool _busy = false;
   bool _rerouting = false;
   int _offRouteSamples = 0;
   DateTime? _lastRerouteAt;
@@ -2421,8 +2420,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       return;
     }
 
-    setState(() => _busy = true);
-
     try {
       final routes = await OpenMapServices.routes(
         LatLng(p.latitude, p.longitude),
@@ -2455,8 +2452,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _message('Route calculation timed out. Please try again.');
     } catch (_) {
       _message('Could not calculate a route right now.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
   }
 
