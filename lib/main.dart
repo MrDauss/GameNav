@@ -1264,7 +1264,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _mapStylePrepared = false;
   bool _mapVisible = false;
   bool _following = true;
-  bool _programmaticCameraMove = false;
   final Set<int> _activeMapPointers = <int>{};
   int? _mapGesturePointer;
   Offset? _mapGestureStart;
@@ -2209,19 +2208,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final map = _map;
     if (map == null) return;
 
-    _programmaticCameraMove = true;
-    try {
-      // MapLibre 0.26.x exposes linear easeCamera specifically for continuous
-      // GPS tracking. Successive updates keep a constant visual velocity and
-      // avoid the stop/start effect of the old ease-in/ease-out animations.
-      await map.easeCamera(
-        update,
-        duration: const Duration(milliseconds: 120),
-        interpolation: CameraAnimationInterpolation.linear,
-      );
-    } finally {
-      _programmaticCameraMove = false;
-    }
+    // MapLibre 0.26.x exposes linear easeCamera specifically for continuous
+    // GPS tracking. Successive updates keep a constant visual velocity and
+    // avoid the stop/start effect of the old ease-in/ease-out animations.
+    await map.easeCamera(
+      update,
+      duration: const Duration(milliseconds: 120),
+      interpolation: CameraAnimationInterpolation.linear,
+    );
   }
 
   void _disableFollowForUserGesture() {
