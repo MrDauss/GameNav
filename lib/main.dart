@@ -278,8 +278,15 @@ class GameStyleBuilder {
         final layoutRaw = raw['layout'];
         if (layoutRaw is Map<String, dynamic> &&
             layoutRaw.containsKey('text-field')) {
-          layoutRaw['text-field'] =
-              _forceEnglishLabelExpression(layoutRaw['text-field']);
+          final textField = layoutRaw['text-field'];
+          // Many OpenMapTiles/OpenFreeMap label expressions intentionally
+          // render two lines: a Latin name plus a local/non-Latin name.
+          // Recursively replacing every name token with the English fallback
+          // turns that into "English\nEnglish". Replace the WHOLE name-based
+          // expression instead so each road/place is rendered exactly once.
+          if (_containsNameReference(textField)) {
+            layoutRaw['text-field'] = _englishNameExpression();
+          }
         }
 
         if (theme.id == 'crime_city') {
@@ -337,15 +344,15 @@ class GameStyleBuilder {
         normalized.startsWith('name:');
   }
 
-  static dynamic _forceEnglishLabelExpression(dynamic value) {
+  static bool _containsNameReference(dynamic value) {
     if (value is String) {
       final lower = value.toLowerCase();
-      if (lower.contains('{name}') ||
+      return lower.contains('{name}') ||
           lower.contains('{name:') ||
-          lower == 'name') {
-        return _englishNameExpression();
-      }
-      return value;
+          lower.contains('{name_') ||
+          lower == 'name' ||
+          lower == 'name_local' ||
+          lower == 'name_int';
     }
 
     if (value is List) {
@@ -353,21 +360,20 @@ class GameStyleBuilder {
           value.first == 'get' &&
           value[1] is String &&
           _isNameProperty(value[1] as String)) {
-        return _englishNameExpression();
+        return true;
       }
-      return value.map<dynamic>(_forceEnglishLabelExpression).toList();
+      for (final item in value) {
+        if (_containsNameReference(item)) return true;
+      }
+      return false;
     }
 
-    if (value is Map<String, dynamic>) {
-      return value.map<String, dynamic>(
-        (key, item) => MapEntry<String, dynamic>(
-          key,
-          _forceEnglishLabelExpression(item),
-        ),
-      );
+    if (value is Map) {
+      for (final item in value.values) {
+        if (_containsNameReference(item)) return true;
+      }
     }
-
-    return value;
+    return false;
   }
 
   static bool _containsAny(String value, List<String> needles) {
