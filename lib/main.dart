@@ -781,7 +781,7 @@ class CommunityReport {
 
 class OpenMapServices {
   static const _userAgent =
-      'GameNav/0.6.0 (https://github.com/MrDauss/GameNav)';
+      'GameNav/0.6.1 (https://github.com/MrDauss/GameNav)';
 
   static Future<List<SearchResult>> search(
     String query, {
@@ -1174,6 +1174,8 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
+  final ValueNotifier<double?> _compassUiHeading = ValueNotifier<double?>(null);
   MapLibreMapController? _map;
   StreamSubscription<Position>? _positionSub;
   StreamSubscription<CompassEvent>? _compassSub;
@@ -1214,8 +1216,14 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   bool _mapVisible = false;
   bool _following = true;
   bool _programmaticCameraMove = false;
+  final Set<int> _activeMapPointers = <int>{};
   int? _mapGesturePointer;
   Offset? _mapGestureStart;
+  bool _searchOpen = false;
+  bool _searchLoading = false;
+  String? _searchError;
+  List<SearchResult> _searchResults = const [];
+  DateTime? _lastCompassUiAt;
   bool _busy = false;
   bool _rerouting = false;
   int _offRouteSamples = 0;
@@ -1311,6 +1319,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _renderTimer?.cancel();
     unawaited(_setWakeLock(false));
     _searchController.dispose();
+    _searchFocusNode.dispose();
+    _compassUiHeading.dispose();
     super.dispose();
   }
 
@@ -1481,12 +1491,21 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _compassSub = events.listen((event) {
       final heading = event.heading;
       if (heading == null || !heading.isFinite) return;
-      _deviceHeading = _normalizeHeading(heading);
+      final normalized = _normalizeHeading(heading);
+      _deviceHeading = normalized;
 
-      // When standing still or moving slowly, GPS course is noisy or missing.
-      // In that state the arrow follows the physical orientation of the phone.
+      // Keep the player arrow responsive when the vehicle is standing still.
       if (_lastSpeedMps < 2.8) {
-        _targetHeading = _deviceHeading!;
+        _targetHeading = normalized;
+      }
+
+      // Update only the small compass widget instead of rebuilding the entire
+      // MapLibre screen for every magnetometer sample.
+      final now = DateTime.now();
+      if (_lastCompassUiAt == null ||
+          now.difference(_lastCompassUiAt!) >= const Duration(milliseconds: 80)) {
+        _lastCompassUiAt = now;
+        _compassUiHeading.value = normalized;
       }
     });
   }
@@ -2155,26 +2174,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _handleMapPointerDown(PointerDownEvent event) {
+  void _disableFollowForUserGesture() {
     if (!_following) return;
-    _mapGesturePointer = event.pointer;
-    _mapGestureStart = event.position;
-  }
-
-  void _handleMapPointerMove(PointerMoveEvent event) {
-    if (!_following ||
-        _mapGesturePointer != event.pointer ||
-        _mapGestureStart == null) {
-      return;
-    }
-
-    // Do not disable navigation-follow mode for a simple tap. A deliberate
-    // drag of roughly one fingertip is enough to hand full camera control to
-    // the user. The location button can enable follow mode again.
-    if ((event.position - _mapGestureStart!).distance < 7.0) return;
-
-    _mapGesturePointer = null;
-    _mapGestureStart = null;
     if (mounted) {
       setState(() => _following = false);
     } else {
@@ -2182,15 +2183,62 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     }
   }
 
+  void _handleMapPointerDown(PointerDownEvent event) {
+    _activeMapPointers.add(event.pointer);
+
+    // Map rotation is a two-finger gesture. Disable automatic camera follow as
+    // soon as the second finger touches the map so the 10 fps follow loop can
+    // never fight MapLibre's rotation recognizer.
+    if (_activeMapPointers.length >= 2) {
+      _disableFollowForUserGesture();
+      _mapGesturePointer = null;
+      _mapGestureStart = null;
+      return;
+    }
+
+    if (!_following) return;
+    _mapGesturePointer = event.pointer;
+    _mapGestureStart = event.position;
+  }
+
+  void _handleMapPointerMove(PointerMoveEvent event) {
+    if (_activeMapPointers.length >= 2) {
+      _disableFollowForUserGesture();
+      return;
+    }
+    if (!_following ||
+        _mapGesturePointer != event.pointer ||
+        _mapGestureStart == null) {
+      return;
+    }
+
+    // A small movement counts as intentional map control. This also prevents
+    // the follow camera from snapping back while a drag starts.
+    if ((event.position - _mapGestureStart!).distance < 5.0) return;
+
+    _mapGesturePointer = null;
+    _mapGestureStart = null;
+    _disableFollowForUserGesture();
+  }
+
   void _handleMapPointerEnd(PointerEvent event) {
+    _activeMapPointers.remove(event.pointer);
     if (_mapGesturePointer != event.pointer) return;
     _mapGesturePointer = null;
     _mapGestureStart = null;
   }
 
   void _handleCameraMove(CameraPosition _) {
-    if (!mounted || _programmaticCameraMove || !_following) return;
-    setState(() => _following = false);
+    if (!mounted || !_following) return;
+
+    // A real touch gesture must win even if it overlaps the final milliseconds
+    // of a programmatic easeCamera animation.
+    if (_activeMapPointers.isNotEmpty) {
+      _disableFollowForUserGesture();
+      return;
+    }
+    if (_programmaticCameraMove) return;
+    _disableFollowForUserGesture();
   }
 
   double _distanceToRouteMeters(LatLng point, List<LatLng> geometry) {
@@ -2363,113 +2411,6 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         lineJoin: 'round',
       ),
     );
-  }
-
-  Future<void> _searchDestination() async {
-    final query = _searchController.text.trim();
-    if (query.isEmpty || _busy) return;
-    if (query.length > 160) {
-      _message('Search is too long. Please use a shorter place or address.');
-      return;
-    }
-
-    FocusScope.of(context).unfocus();
-    setState(() => _busy = true);
-
-    try {
-      var results = await OpenMapServices.search(query, bias: _lastPosition);
-      if (!mounted) return;
-
-      final p = _lastPosition;
-      if (p != null && results.isNotEmpty) {
-        results = await OpenMapServices.addTravelEstimates(
-          LatLng(p.latitude, p.longitude),
-          results,
-        );
-      }
-      if (!mounted) return;
-
-      if (results.isEmpty) {
-        _message('No destination found. Try adding a city or street.');
-        return;
-      }
-
-      final chosen = await showModalBottomSheet<SearchResult>(
-        context: context,
-        showDragHandle: true,
-        backgroundColor: _theme.panel,
-        builder: (context) => Directionality(
-          textDirection: TextDirection.ltr,
-          child: SafeArea(
-            child: ListView(
-              shrinkWrap: true,
-              children: [
-                ListTile(
-                  leading: Icon(Icons.search, color: _theme.accent),
-                  title: Text(
-                    'Search results',
-                    style: _displayStyle(fontSize: 24),
-                  ),
-                ),
-                ...results.map(
-                  (r) => ListTile(
-                    leading: Icon(Icons.place, color: _theme.accent),
-                    title: Text(
-                      r.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w800),
-                    ),
-                    subtitle: Text(
-                      [
-                        if (r.subtitle != null && r.subtitle!.isNotEmpty)
-                          r.subtitle!,
-                        if (r.distanceMeters != null)
-                          '${(r.distanceMeters! / 1000).toStringAsFixed(1)} km',
-                      ].join(' • '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    trailing: r.durationSeconds == null
-                        ? null
-                        : Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '${(r.durationSeconds! / 60).round()} min',
-                                style: TextStyle(
-                                  color: _theme.accent,
-                                  fontWeight: FontWeight.w900,
-                                  fontSize: 16,
-                                ),
-                              ),
-                              Text(
-                                _arrivalTime(r.durationSeconds!),
-                                style: TextStyle(
-                                  color: _theme.foreground.withValues(alpha: 0.7),
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ],
-                          ),
-                    onTap: () => Navigator.pop(context, r),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-
-      if (chosen != null) await _buildRoutes(chosen);
-    } on TimeoutException {
-      _message('Search timed out. Please try again.');
-    } catch (_) {
-      _message('Search service is unavailable right now.');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
   }
 
   Future<void> _buildRoutes(SearchResult destination) async {
@@ -3161,105 +3102,300 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
+  String _cardinalDirection(double heading) {
+    const directions = <String>['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+    final index = ((heading + 22.5) / 45.0).floor() % directions.length;
+    return directions[index];
+  }
+
   Widget _northIndicator() {
     return IgnorePointer(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: const [
-          Text(
-            'N',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.w900,
-              fontSize: 16,
-              height: 1,
-            ),
-          ),
-          SizedBox(height: 2),
-          Icon(Icons.navigation, color: Colors.white, size: 23),
-        ],
+      child: ValueListenableBuilder<double?>(
+        valueListenable: _compassUiHeading,
+        builder: (context, heading, _) {
+          final h = heading == null || !heading.isFinite
+              ? 0.0
+              : _normalizeHeading(heading);
+          final label = heading == null ? 'N' : _cardinalDirection(h);
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                heading == null ? label : '$label ${h.round()}°',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 13,
+                  height: 1,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Transform.rotate(
+                // A compass needle points toward north relative to the phone.
+                angle: -h * math.pi / 180.0,
+                child: const Icon(
+                  Icons.navigation,
+                  color: Colors.white,
+                  size: 24,
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Future<void> _showSearchPanel() async {
+  void _openSearchPanel() {
+    if (!mounted || _searchOpen) return;
+    setState(() {
+      _searchOpen = true;
+      _searchLoading = false;
+      _searchError = null;
+      _searchResults = const [];
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _searchOpen) _searchFocusNode.requestFocus();
+    });
+  }
+
+  void _closeSearchPanel() {
     if (!mounted) return;
-    final localController = TextEditingController(text: _searchController.text);
-    final query = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) => Padding(
-        padding: EdgeInsets.only(
-          left: 14,
-          right: 14,
-          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom + 14,
-        ),
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _searchOpen = false;
+      _searchLoading = false;
+      _searchError = null;
+      _searchResults = const [];
+    });
+  }
+
+  Future<void> _performSearch() async {
+    final query = _searchController.text.trim();
+    if (query.isEmpty || _searchLoading) return;
+    if (query.length > 160) {
+      setState(() => _searchError = 'Use a shorter place or address.');
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _searchLoading = true;
+      _searchError = null;
+      _searchResults = const [];
+    });
+
+    try {
+      var results = await OpenMapServices.search(query, bias: _lastPosition);
+      if (!mounted || !_searchOpen) return;
+
+      final p = _lastPosition;
+      if (p != null && results.isNotEmpty) {
+        results = await OpenMapServices.addTravelEstimates(
+          LatLng(p.latitude, p.longitude),
+          results,
+        );
+      }
+      if (!mounted || !_searchOpen) return;
+
+      setState(() {
+        _searchResults = results;
+        _searchError = results.isEmpty
+            ? 'No destination found. Try adding a city or street.'
+            : null;
+      });
+    } on TimeoutException {
+      if (mounted && _searchOpen) {
+        setState(() => _searchError = 'Search timed out. Please try again.');
+      }
+    } catch (_) {
+      if (mounted && _searchOpen) {
+        setState(() =>
+            _searchError = 'Search service is unavailable right now.');
+      }
+    } finally {
+      if (mounted && _searchOpen) {
+        setState(() => _searchLoading = false);
+      }
+    }
+  }
+
+  Future<void> _chooseSearchResult(SearchResult result) async {
+    if (!mounted) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _searchOpen = false;
+      _searchLoading = false;
+      _searchError = null;
+      _searchResults = const [];
+    });
+
+    // Keep the MapLibre platform view mounted continuously. The previous
+    // implementation opened two modal bottom sheets in sequence; on some
+    // Android devices that can briefly black out or destabilize the map view.
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    if (mounted) await _buildRoutes(result);
+  }
+
+  Widget _searchOverlay() {
+    return Positioned.fill(
+      child: Material(
+        color: const Color(0xF30A0A0A),
         child: SafeArea(
-          top: false,
-          child: Material(
-            color: const Color(0xF20A0A0A),
-            borderRadius: BorderRadius.circular(24),
-            clipBehavior: Clip.antiAlias,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'WHERE TO?',
-                    style: gameDisplayStyle(
-                      fontSize: 27,
-                      color: Colors.white,
-                      fontFamily: kGameDisplayFont,
-                      letterSpacing: 0.25,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'WHERE TO?',
+                        style: gameDisplayStyle(
+                          fontSize: 31,
+                          color: Colors.white,
+                          fontFamily: kGameDisplayFont,
+                          letterSpacing: 0.25,
+                        ),
+                      ),
+                    ),
+                    _gameRoundButton(
+                      icon: Icons.close,
+                      tooltip: 'Close search',
+                      size: 44,
+                      onPressed: _closeSearchPanel,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  textInputAction: TextInputAction.search,
+                  onSubmitted: (_) => _performSearch(),
+                  style: const TextStyle(color: Colors.white, fontSize: 17),
+                  decoration: InputDecoration(
+                    hintText: 'Search a place or address',
+                    hintStyle: const TextStyle(color: Color(0xFF8F8F8F)),
+                    prefixIcon: const Icon(Icons.search, color: Colors.white),
+                    suffixIcon: IconButton(
+                      onPressed: _performSearch,
+                      icon: const Icon(Icons.arrow_forward, color: Colors.white),
+                    ),
+                    filled: true,
+                    fillColor: const Color(0xFF171717),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: const BorderSide(color: Color(0xFF424242)),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(16),
+                      borderSide: const BorderSide(color: Colors.white, width: 1.4),
                     ),
                   ),
+                ),
+                if (_searchLoading) ...[
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: localController,
-                    autofocus: true,
-                    textInputAction: TextInputAction.search,
-                    style: const TextStyle(color: Colors.white, fontSize: 17),
-                    onSubmitted: (value) {
-                      final trimmed = value.trim();
-                      if (trimmed.isNotEmpty) Navigator.pop(sheetContext, trimmed);
-                    },
-                    decoration: InputDecoration(
-                      hintText: 'Search a place or address',
-                      hintStyle: const TextStyle(color: Color(0xFF8F8F8F)),
-                      prefixIcon: const Icon(Icons.search, color: Colors.white),
-                      suffixIcon: IconButton(
-                        onPressed: () {
-                          final trimmed = localController.text.trim();
-                          if (trimmed.isNotEmpty) Navigator.pop(sheetContext, trimmed);
-                        },
-                        icon: const Icon(Icons.arrow_forward, color: Colors.white),
-                      ),
-                      filled: true,
-                      fillColor: const Color(0xFF171717),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        borderSide: const BorderSide(color: Color(0xFF424242)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(16),
-                        borderSide: const BorderSide(color: Colors.white, width: 1.4),
-                      ),
-                    ),
+                  const LinearProgressIndicator(
+                    minHeight: 2,
+                    color: Colors.white,
+                    backgroundColor: Color(0xFF303030),
                   ),
                 ],
-              ),
+                if (_searchError != null) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    _searchError!,
+                    style: const TextStyle(color: Color(0xFFE4E4E4)),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                Expanded(
+                  child: _searchResults.isEmpty
+                      ? Center(
+                          child: Text(
+                            _searchLoading
+                                ? 'SEARCHING...'
+                                : 'Search for a destination',
+                            style: const TextStyle(
+                              color: Color(0xFF8F8F8F),
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          itemCount: _searchResults.length,
+                          separatorBuilder: (_, __) => const Divider(
+                            color: Color(0xFF292929),
+                            height: 1,
+                          ),
+                          itemBuilder: (context, index) {
+                            final r = _searchResults[index];
+                            return ListTile(
+                              contentPadding:
+                                  const EdgeInsets.symmetric(horizontal: 4),
+                              leading: const Icon(
+                                Icons.place_outlined,
+                                color: Colors.white,
+                              ),
+                              title: Text(
+                                r.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              subtitle: Text(
+                                [
+                                  if (r.subtitle != null && r.subtitle!.isNotEmpty)
+                                    r.subtitle!,
+                                  if (r.distanceMeters != null)
+                                    '${(r.distanceMeters! / 1000).toStringAsFixed(1)} km',
+                                ].join(' • '),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(color: Color(0xFFADADAD)),
+                              ),
+                              trailing: r.durationSeconds == null
+                                  ? const Icon(Icons.chevron_right,
+                                      color: Colors.white)
+                                  : Column(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      children: [
+                                        Text(
+                                          '${(r.durationSeconds! / 60).round()} MIN',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.w900,
+                                            fontSize: 15,
+                                          ),
+                                        ),
+                                        Text(
+                                          _arrivalTime(r.durationSeconds!),
+                                          style: const TextStyle(
+                                            color: Color(0xFF9D9D9D),
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                              onTap: () => _chooseSearchResult(r),
+                            );
+                          },
+                        ),
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
-    localController.dispose();
-    if (!mounted || query == null || query.trim().isEmpty) return;
-    _searchController.text = query.trim();
-    await _searchDestination();
   }
 
   String _arrivalTime(double durationSeconds) {
@@ -3459,7 +3595,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                         icon: Icons.search,
                         tooltip: 'Search destination',
                         size: 48,
-                        onPressed: _showSearchPanel,
+                        onPressed: _openSearchPanel,
                       ),
                     ),
 
@@ -3624,6 +3760,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
               ),
             ),
+            if (_searchOpen) _searchOverlay(),
           ],
         ),
       ),
