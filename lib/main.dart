@@ -45,7 +45,19 @@ class GameNavApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'GameNav',
-      theme: ThemeData.dark(useMaterial3: true),
+      theme: ThemeData(
+        brightness: Brightness.dark,
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.black,
+        colorScheme: const ColorScheme.dark(
+          primary: Colors.white,
+          secondary: Color(0xFFCACACA),
+          surface: Color(0xFF101010),
+          onPrimary: Colors.black,
+          onSecondary: Colors.black,
+          onSurface: Colors.white,
+        ),
+      ),
       home: const MapScreen(),
     );
   }
@@ -270,7 +282,15 @@ class GameStyleBuilder {
               _forceEnglishLabelExpression(layoutRaw['text-field']);
         }
 
-        if (theme.id == 'frontier') {
+        if (theme.id == 'crime_city') {
+          // OpenFreeMap SDF POIs become white game-map glyphs where supported.
+          // Non-SDF sprite icons simply ignore icon-color and keep rendering.
+          paint['icon-color'] = '#F2F2F2';
+          paint['icon-halo-color'] = '#090909';
+          paint['icon-halo-width'] = 0.9;
+          paint['icon-opacity'] = 0.96;
+          paint['text-opacity'] = 0.92;
+        } else if (theme.id == 'frontier') {
           paint['icon-opacity'] = 0.72;
         } else if (theme.id == 'cyber_grid') {
           paint['icon-opacity'] = 0.82;
@@ -426,17 +446,19 @@ class GameStyleBuilder {
         );
       case 'crime_city':
       default:
+        // High-contrast monochrome game-map palette, matching the approved
+        // GameNav concept: charcoal blocks, white/grey roads and sparse labels.
         return const GameMapPalette(
-          background: '#0D1010',
-          land: '#151A18',
-          water: '#0B1D23',
-          park: '#18251B',
-          building: '#242925',
-          road: '#3A403B',
-          roadMajor: '#626A62',
-          roadOutline: '#070908',
-          label: '#F2F0EA',
-          labelHalo: '#0C0E0D',
+          background: '#080808',
+          land: '#111111',
+          water: '#0B0B0B',
+          park: '#161616',
+          building: '#262626',
+          road: '#AFAFAF',
+          roadMajor: '#E4E4E4',
+          roadOutline: '#030303',
+          label: '#EAEAEA',
+          labelHalo: '#090909',
         );
     }
   }
@@ -501,10 +523,18 @@ class _GameMapFxPainter extends CustomPainter {
         );
       canvas.drawRect(rect, glow);
     } else if (theme.id == 'crime_city') {
-      canvas.drawRect(
-        rect,
-        Paint()..color = const Color(0x0C6B5848),
-      );
+      // Keep the approved reference clean and monochrome: only a faint white
+      // haze at the centre, never a coloured tint.
+      final glow = Paint()
+        ..shader = RadialGradient(
+          colors: const [Color(0x0FFFFFFF), Colors.transparent],
+        ).createShader(
+          Rect.fromCircle(
+            center: Offset(size.width * 0.5, size.height * 0.44),
+            radius: size.longestSide * 0.62,
+          ),
+        );
+      canvas.drawRect(rect, glow);
     }
 
     if (theme.id != 'classic') {
@@ -551,12 +581,12 @@ const gameThemes = <GameThemeSpec>[
   GameThemeSpec(
     id: 'crime_city',
     name: 'Crime City',
-    tagline: 'Open world • urban crime-game atmosphere',
+    tagline: 'Monochrome • open-world game map',
     mapStyle: 'https://tiles.openfreemap.org/styles/liberty',
-    accent: Color(0xFFE45AAE),
-    panel: Color(0xE8121018),
+    accent: Colors.white,
+    panel: Color(0xE60A0A0A),
     foreground: Colors.white,
-    routeColor: '#E45AAE',
+    routeColor: '#FFFFFF',
     icon: Icons.location_city,
   ),
   GameThemeSpec(
@@ -751,7 +781,7 @@ class CommunityReport {
 
 class OpenMapServices {
   static const _userAgent =
-      'GameNav/0.5.2 (https://github.com/MrDauss/GameNav)';
+      'GameNav/0.6.0 (https://github.com/MrDauss/GameNav)';
 
   static Future<List<SearchResult>> search(
     String query, {
@@ -1678,36 +1708,32 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
           _lastCameraFrameAt = now;
           final speedKmh = _lastSpeedMps * 3.6;
 
-          // DRIVER POV: MapLibre is still a navigation map (not Street View),
-          // but the camera is now pushed close to the road with a near-horizon
-          // pitch. The camera looks farther ahead than the vehicle position so
-          // the marker stays in the lower third of the screen instead of the
-          // centre. When a route is active, the camera follows the road tangent
-          // so the lane ahead remains visually stable even while GPS/compass
-          // heading is noisy.
+          // GAME-MAP POV: match the approved reference with a flatter,
+          // slightly tilted top-down camera. The route still stays forward-facing,
+          // but we keep enough city context visible to feel like an in-game map.
           final zoom = speedKmh > 100
-              ? 17.55
+              ? 16.95
               : speedKmh > 70
-                  ? 17.85
+                  ? 17.20
                   : speedKmh > 40
-                      ? 18.15
+                      ? 17.48
                       : speedKmh > 15
-                          ? 18.45
-                          : 18.70;
+                          ? 17.78
+                          : 18.02;
           final tilt = speedKmh > 80
-              ? 60.0
+              ? 34.0
               : speedKmh > 35
-                  ? 59.0
-                  : 57.0;
+                  ? 31.0
+                  : 28.0;
           final lookAheadMeters = speedKmh > 100
-              ? 235.0
+              ? 175.0
               : speedKmh > 70
-                  ? 190.0
+                  ? 145.0
                   : speedKmh > 40
-                      ? 145.0
+                      ? 118.0
                       : speedKmh > 15
-                          ? 112.0
-                          : 88.0;
+                          ? 92.0
+                          : 68.0;
           final routeHeading = _routeCameraHeading(rendered);
           final cameraHeading = routeHeading == null
               ? _renderedHeading
@@ -2317,22 +2343,23 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _routeLine = null;
     }
 
+    final monoRoute = _theme.id == 'crime_city';
     _routeGlowLine = await map.addLine(
       LineOptions(
         geometry: route.geometry,
-        lineColor: _theme.routeColor,
-        lineWidth: 15,
-        lineOpacity: 0.22,
-        lineBlur: 3.0,
+        lineColor: monoRoute ? '#050505' : _theme.routeColor,
+        lineWidth: monoRoute ? 12 : 15,
+        lineOpacity: monoRoute ? 0.96 : 0.22,
+        lineBlur: monoRoute ? 0.0 : 3.0,
         lineJoin: 'round',
       ),
     );
     _routeLine = await map.addLine(
       LineOptions(
         geometry: route.geometry,
-        lineColor: _theme.routeColor,
-        lineWidth: 7,
-        lineOpacity: 0.98,
+        lineColor: monoRoute ? '#FFFFFF' : _theme.routeColor,
+        lineWidth: monoRoute ? 6.2 : 7,
+        lineOpacity: 0.99,
         lineJoin: 'round',
       ),
     );
@@ -3086,6 +3113,155 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     );
   }
 
+  Color get _gameUiWhite => const Color(0xFFF4F4F4);
+  Color get _gameUiBlack => const Color(0xFF080808);
+
+  Widget _gameRoundButton({
+    required IconData icon,
+    required VoidCallback onPressed,
+    String? tooltip,
+    double size = 54,
+  }) {
+    return Tooltip(
+      message: tooltip ?? '',
+      child: Material(
+        color: _gameUiWhite,
+        elevation: 7,
+        shadowColor: Colors.black.withValues(alpha: 0.45),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: SizedBox(
+            width: size,
+            height: size,
+            child: Icon(icon, color: _gameUiBlack, size: size * 0.46),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _gameNavWordmark() {
+    return IgnorePointer(
+      child: Text(
+        'GAMENAV',
+        style: gameDisplayStyle(
+          fontSize: 39,
+          color: Colors.white,
+          letterSpacing: 0.3,
+          fontFamily: kGameDisplayFont,
+          height: 0.86,
+        ).copyWith(
+          shadows: const [
+            Shadow(color: Colors.black, blurRadius: 6, offset: Offset(0, 2)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _northIndicator() {
+    return IgnorePointer(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: const [
+          Text(
+            'N',
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w900,
+              fontSize: 16,
+              height: 1,
+            ),
+          ),
+          SizedBox(height: 2),
+          Icon(Icons.navigation, color: Colors.white, size: 23),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showSearchPanel() async {
+    if (!mounted) return;
+    final localController = TextEditingController(text: _searchController.text);
+    final query = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Padding(
+        padding: EdgeInsets.only(
+          left: 14,
+          right: 14,
+          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom + 14,
+        ),
+        child: SafeArea(
+          top: false,
+          child: Material(
+            color: const Color(0xF20A0A0A),
+            borderRadius: BorderRadius.circular(24),
+            clipBehavior: Clip.antiAlias,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'WHERE TO?',
+                    style: gameDisplayStyle(
+                      fontSize: 27,
+                      color: Colors.white,
+                      fontFamily: kGameDisplayFont,
+                      letterSpacing: 0.25,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: localController,
+                    autofocus: true,
+                    textInputAction: TextInputAction.search,
+                    style: const TextStyle(color: Colors.white, fontSize: 17),
+                    onSubmitted: (value) {
+                      final trimmed = value.trim();
+                      if (trimmed.isNotEmpty) Navigator.pop(sheetContext, trimmed);
+                    },
+                    decoration: InputDecoration(
+                      hintText: 'Search a place or address',
+                      hintStyle: const TextStyle(color: Color(0xFF8F8F8F)),
+                      prefixIcon: const Icon(Icons.search, color: Colors.white),
+                      suffixIcon: IconButton(
+                        onPressed: () {
+                          final trimmed = localController.text.trim();
+                          if (trimmed.isNotEmpty) Navigator.pop(sheetContext, trimmed);
+                        },
+                        icon: const Icon(Icons.arrow_forward, color: Colors.white),
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFF171717),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: const BorderSide(color: Color(0xFF424242)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(16),
+                        borderSide: const BorderSide(color: Colors.white, width: 1.4),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    localController.dispose();
+    if (!mounted || query == null || query.trim().isEmpty) return;
+    _searchController.text = query.trim();
+    await _searchDestination();
+  }
+
   String _arrivalTime(double durationSeconds) {
     final arrival = DateTime.now().add(
       Duration(seconds: durationSeconds.round()),
@@ -3110,39 +3286,45 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     final km = remainingDistance / 1000;
     final min = (remainingDuration / 60).ceil();
 
-    // Compact top HUD. Keeping ETA away from the lower navigation viewport
-    // guarantees it can never cover the vehicle marker.
     return Material(
-      color: _theme.panel.withValues(alpha: 0.94),
-      elevation: 6,
-      borderRadius: BorderRadius.circular(16),
-      child: Padding(
+      color: const Color(0xD9080808),
+      elevation: 5,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xAAFFFFFF), width: 0.8),
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              '$min min',
-              style: TextStyle(
-                color: _theme.accent,
-                fontSize: 17,
+              '$min MIN',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
                 fontWeight: FontWeight.w900,
               ),
             ),
-            const SizedBox(width: 9),
+            const SizedBox(width: 10),
+            Container(width: 1, height: 20, color: const Color(0x66FFFFFF)),
+            const SizedBox(width: 10),
             Text(
-              _arrivalTime(remainingDuration),
+              _arrivalTime(remainingDuration).replaceFirst('Arrive ', ''),
               style: const TextStyle(
+                color: Colors.white,
                 fontSize: 13,
                 fontWeight: FontWeight.w800,
               ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 10),
             Text(
-              '${km.toStringAsFixed(1)} km',
-              style: TextStyle(
+              '${km.toStringAsFixed(1)} KM',
+              style: const TextStyle(
                 fontSize: 12,
-                color: _theme.foreground.withValues(alpha: 0.72),
+                color: Color(0xFFC6C6C6),
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],
@@ -3172,7 +3354,11 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
             padding: const EdgeInsets.only(left: 8),
             child: ChoiceChip(
               selected: selected,
-              selectedColor: _theme.accent,
+              selectedColor: Colors.white,
+              backgroundColor: const Color(0xD9080808),
+              side: BorderSide(
+                color: selected ? Colors.white : const Color(0x77FFFFFF),
+              ),
               labelStyle: TextStyle(
                 color: selected ? Colors.black : Colors.white,
                 fontWeight: FontWeight.bold,
@@ -3195,7 +3381,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Directionality(
       textDirection: TextDirection.ltr,
       child: Scaffold(
-        backgroundColor: _theme.panel,
+        backgroundColor: _gameUiBlack,
         body: Stack(
           children: [
             if (_mapStylePrepared)
@@ -3230,187 +3416,159 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                 ),
               )
             else
-              Positioned.fill(
+              const Positioned.fill(
                 child: ColoredBox(
-                  color: _theme.panel,
+                  color: Color(0xFF080808),
                   child: Center(
-                    child: CircularProgressIndicator(color: _theme.accent),
+                    child: CircularProgressIndicator(color: Colors.white),
                   ),
                 ),
               ),
             if (_mapStylePrepared)
               Positioned.fill(child: GameMapFxOverlay(theme: _theme)),
             if (!_mapVisible)
-              Positioned.fill(
+              const Positioned.fill(
                 child: IgnorePointer(
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    color: _theme.panel,
-                    alignment: Alignment.center,
-                    child: CircularProgressIndicator(color: _theme.accent),
+                  child: ColoredBox(
+                    color: Color(0xFF080808),
+                    child: Center(
+                      child: CircularProgressIndicator(color: Colors.white),
+                    ),
                   ),
                 ),
               ),
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
+
+            Positioned.fill(
+              child: SafeArea(
+                child: Stack(
                   children: [
-                    Material(
-                      color: _theme.panel,
-                      elevation: 10,
-                      borderRadius: BorderRadius.circular(22),
-                      child: TextField(
-                        controller: _searchController,
-                        textInputAction: TextInputAction.search,
-                        onSubmitted: (_) => _searchDestination(),
-                        style: TextStyle(color: _theme.foreground),
-                        decoration: InputDecoration(
-                          hintText: 'Where to?',
-                          hintStyle: TextStyle(
-                            color: _theme.foreground.withValues(alpha: 0.65),
-                          ),
-                          prefixIcon: Icon(Icons.search, color: _theme.accent),
-                          suffixIcon: _busy
-                              ? Padding(
-                                  padding: const EdgeInsets.all(14),
-                                  child: SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                      color: _theme.accent,
-                                    ),
-                                  ),
-                                )
-                              : IconButton(
-                                  icon: Icon(Icons.arrow_forward, color: _theme.accent),
-                                  onPressed: _searchDestination,
-                                ),
-                          border: InputBorder.none,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 16,
-                          ),
-                        ),
+                    Positioned(
+                      left: 20,
+                      top: 17,
+                      child: _gameNavWordmark(),
+                    ),
+                    Positioned(
+                      right: 23,
+                      top: 15,
+                      child: _northIndicator(),
+                    ),
+                    Positioned(
+                      right: 18,
+                      top: 72,
+                      child: _gameRoundButton(
+                        icon: Icons.search,
+                        tooltip: 'Search destination',
+                        size: 48,
+                        onPressed: _showSearchPanel,
                       ),
                     ),
-                    if (_gpsIssue != null) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.center,
+
+                    if (_route != null)
+                      Positioned(
+                        left: 18,
+                        top: 72,
+                        child: _navigationSummary(),
+                      ),
+
+                    if (_routeOptions.length > 1)
+                      Positioned(
+                        left: 10,
+                        right: 78,
+                        top: 120,
+                        child: _routeAlternatives(),
+                      ),
+
+                    if (_gpsIssue != null)
+                      Positioned(
+                        left: 18,
+                        top: _route == null ? 82 : 125,
                         child: DecoratedBox(
                           decoration: BoxDecoration(
-                            color: _theme.panel,
-                            borderRadius: BorderRadius.circular(14),
+                            color: const Color(0xD9080808),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0x66FFFFFF)),
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 7,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(
-                                  Icons.gps_off,
-                                  size: 16,
-                                  color: _theme.accent,
+                                const Icon(Icons.gps_off, size: 15, color: Colors.white),
+                                const SizedBox(width: 7),
+                                Text(
+                                  _gpsIssue!,
+                                  style: const TextStyle(color: Colors.white, fontSize: 12),
                                 ),
-                                const SizedBox(width: 8),
-                                Text(_gpsIssue!),
                               ],
                             ),
                           ),
                         ),
                       ),
-                    ],
-                    if (_rerouting) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.center,
+
+                    if (_rerouting)
+                      Positioned(
+                        left: 18,
+                        top: _route == null ? 82 : 125,
                         child: DecoratedBox(
                           decoration: BoxDecoration(
-                            color: _theme.panel,
-                            borderRadius: BorderRadius.circular(14),
+                            color: const Color(0xE6080808),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0x88FFFFFF)),
                           ),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 7,
-                            ),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 SizedBox(
-                                  width: 14,
-                                  height: 14,
+                                  width: 13,
+                                  height: 13,
                                   child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: _theme.accent,
+                                    strokeWidth: 1.8,
+                                    color: Colors.white,
                                   ),
                                 ),
-                                const SizedBox(width: 8),
-                                const Text('Recalculating…'),
+                                SizedBox(width: 7),
+                                Text('RECALCULATING', style: TextStyle(fontSize: 11)),
                               ],
                             ),
                           ),
                         ),
                       ),
-                    ],
-                    if (_routeOptions.length > 1) ...[
-                      const SizedBox(height: 8),
-                      _routeAlternatives(),
-                    ],
-                    if (_route != null) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: _navigationSummary(),
-                      ),
-                    ],
+
                     if (_nextTrafficSignal != null &&
                         _distanceToNextTrafficSignal != null &&
-                        _distanceToNextTrafficSignal! <= 320) ...[
-                      const SizedBox(height: 8),
-                      Align(
-                        alignment: Alignment.center,
+                        _distanceToNextTrafficSignal! <= 320)
+                      Positioned(
+                        top: _routeOptions.length > 1 ? 170 : 124,
+                        left: 18,
                         child: DecoratedBox(
                           decoration: BoxDecoration(
-                            color: _theme.panel,
-                            borderRadius: BorderRadius.circular(15),
-                            border: Border.all(
-                              color: const Color(0x99F5B642),
-                              width: 1.2,
-                            ),
+                            color: const Color(0xE6080808),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xAAFFFFFF)),
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 8,
-                            ),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(
-                                  Icons.traffic,
-                                  color: Color(0xFFF5B642),
-                                  size: 20,
-                                ),
-                                const SizedBox(width: 8),
+                                const Icon(Icons.traffic, color: Colors.white, size: 18),
+                                const SizedBox(width: 7),
                                 Text(
-                                  'Traffic light • ${_distanceToNextTrafficSignal!.round()} m',
+                                  '${_distanceToNextTrafficSignal!.round()} M',
                                   style: const TextStyle(
-                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w900,
                                   ),
                                 ),
                                 if (_nextTrafficSignal!.remainingSeconds != null) ...[
                                   const SizedBox(width: 8),
                                   Text(
-                                    '${_nextTrafficSignal!.remainingSeconds} sec',
-                                    style: TextStyle(
-                                      color: _theme.accent,
-                                      fontWeight: FontWeight.w900,
+                                    '${_nextTrafficSignal!.remainingSeconds} SEC',
+                                    style: const TextStyle(
+                                      color: Color(0xFFCFCFCF),
+                                      fontWeight: FontWeight.w800,
                                     ),
                                   ),
                                 ],
@@ -3419,94 +3577,49 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           ),
                         ),
                       ),
-                    ],
-                    const Spacer(),
-                    Row(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Column(
-                          children: [
-                            FloatingActionButton.small(
-                              heroTag: 'progress',
-                              backgroundColor: _theme.panel,
-                              foregroundColor: _theme.accent,
-                              onPressed: _showProgressSheet,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  Icon(_selectedReward.icon),
-                                  if (_xp > 0)
-                                    Positioned(
-                                      right: -8,
-                                      top: -8,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 5,
-                                          vertical: 2,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: _theme.accent,
-                                          borderRadius: BorderRadius.circular(10),
-                                        ),
-                                        child: Text(
-                                          '$_xp',
-                                          style: const TextStyle(
-                                            color: Colors.black,
-                                            fontSize: 8,
-                                            fontWeight: FontWeight.w900,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            FloatingActionButton.small(
-                              heroTag: 'themes',
-                              backgroundColor: _theme.panel,
-                              foregroundColor: _theme.accent,
-                              onPressed: _showThemeSheet,
-                              child: const Icon(Icons.palette),
-                            ),
-                            const SizedBox(height: 10),
-                            FloatingActionButton.small(
-                              heroTag: 'avoid',
-                              backgroundColor: _theme.panel,
-                              foregroundColor: _theme.accent,
-                              onPressed: _showAvoidanceSheet,
-                              child: const Icon(Icons.tune),
-                            ),
-                            const SizedBox(height: 10),
-                            FloatingActionButton.small(
-                              heroTag: 'follow',
-                              backgroundColor: _theme.panel,
-                              foregroundColor: _theme.accent,
-                              onPressed: () {
-                                setState(() => _following = true);
-                                if (_lastPosition != null) {
-                                  _onPosition(_lastPosition!);
-                                }
-                              },
-                              child: const Icon(Icons.my_location),
-                            ),
-                          ],
-                        ),
-                        const Spacer(),
-                        FloatingActionButton.extended(
-                          heroTag: 'report',
-                          backgroundColor: _theme.accent,
-                          foregroundColor: Colors.black,
-                          onPressed: _showReportSheet,
-                          icon: const Icon(Icons.campaign),
-                          label: const Text(
-                            'Report',
-                            style: TextStyle(fontWeight: FontWeight.bold),
+
+                    Positioned(
+                      right: 17,
+                      bottom: 64,
+                      child: Column(
+                        children: [
+                          _gameRoundButton(
+                            icon: Icons.my_location,
+                            tooltip: 'Follow vehicle',
+                            onPressed: () {
+                              setState(() => _following = true);
+                              if (_lastPosition != null) {
+                                _onPosition(_lastPosition!);
+                              }
+                            },
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 10),
+                          _gameRoundButton(
+                            icon: Icons.flag,
+                            tooltip: 'Report road event',
+                            onPressed: _showReportSheet,
+                          ),
+                          const SizedBox(height: 10),
+                          _gameRoundButton(
+                            icon: Icons.layers,
+                            tooltip: 'Themes',
+                            onPressed: _showThemeSheet,
+                          ),
+                          const SizedBox(height: 10),
+                          _gameRoundButton(
+                            icon: _selectedReward.icon,
+                            tooltip: 'Missions and rank',
+                            onPressed: _showProgressSheet,
+                          ),
+                          const SizedBox(height: 10),
+                          _gameRoundButton(
+                            icon: Icons.tune,
+                            tooltip: 'Route preferences',
+                            onPressed: _showAvoidanceSheet,
+                          ),
+                        ],
+                      ),
                     ),
-                    const SizedBox(height: 10),
                   ],
                 ),
               ),
