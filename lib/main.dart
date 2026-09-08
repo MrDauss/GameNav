@@ -1171,6 +1171,47 @@ class OpenMapServices {
   }
 }
 
+
+class _MapCenterCrosshairPainter extends CustomPainter {
+  const _MapCenterCrosshairPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final half = size.shortestSide / 2;
+    final stroke = (size.shortestSide * 0.055).clamp(1.6, 2.8).toDouble();
+
+    // Thin dark edge keeps the white cross visible above bright roads.
+    final shadow = Paint()
+      ..color = const Color(0xB0000000)
+      ..strokeWidth = stroke + 2.2
+      ..strokeCap = StrokeCap.square;
+    final white = Paint()
+      ..color = Colors.white
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.square;
+
+    void draw(Paint paint) {
+      canvas.drawLine(
+        Offset(center.dx - half, center.dy),
+        Offset(center.dx + half, center.dy),
+        paint,
+      );
+      canvas.drawLine(
+        Offset(center.dx, center.dy - half),
+        Offset(center.dx, center.dy + half),
+        paint,
+      );
+    }
+
+    draw(shadow);
+    draw(white);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MapCenterCrosshairPainter oldDelegate) => false;
+}
+
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
 
@@ -1182,6 +1223,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   final _searchController = TextEditingController();
   final _searchFocusNode = FocusNode();
   final ValueNotifier<double?> _compassUiHeading = ValueNotifier<double?>(null);
+  final ValueNotifier<bool> _mapCrosshairVisible = ValueNotifier<bool>(false);
+  final ValueNotifier<double> _mapCameraZoom = ValueNotifier<double>(16.0);
   MapLibreMapController? _map;
   StreamSubscription<Position>? _positionSub;
   StreamSubscription<CompassEvent>? _compassSub;
@@ -1326,6 +1369,8 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _searchController.dispose();
     _searchFocusNode.dispose();
     _compassUiHeading.dispose();
+    _mapCrosshairVisible.dispose();
+    _mapCameraZoom.dispose();
     super.dispose();
   }
 
@@ -2180,12 +2225,57 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   void _disableFollowForUserGesture() {
+    // Free-map mode uses a GTA-style white center crosshair. It remains visible
+    // while the user pans/rotates/zooms and disappears when Follow is restored.
+    if (!_mapCrosshairVisible.value) _mapCrosshairVisible.value = true;
     if (!_following) return;
     if (mounted) {
       setState(() => _following = false);
     } else {
       _following = false;
     }
+  }
+
+  void _enableFollowMode() {
+    if (_mapCrosshairVisible.value) _mapCrosshairVisible.value = false;
+    if (mounted) {
+      setState(() => _following = true);
+    } else {
+      _following = true;
+    }
+  }
+
+  double _crosshairSizeForZoom(double zoom) {
+    // Inverse scale: zooming OUT makes the cross larger, zooming IN makes it
+    // smaller. The clamp prevents it from becoming distracting at extremes.
+    final normalized = ((18.5 - zoom) / 7.0).clamp(0.0, 1.0).toDouble();
+    return 20.0 + (34.0 * normalized);
+  }
+
+  Widget _mapCenterCrosshair() {
+    return IgnorePointer(
+      child: ValueListenableBuilder<bool>(
+        valueListenable: _mapCrosshairVisible,
+        builder: (context, visible, _) {
+          if (!visible) return const SizedBox.shrink();
+          return Center(
+            child: ValueListenableBuilder<double>(
+              valueListenable: _mapCameraZoom,
+              builder: (context, zoom, _) {
+                final size = _crosshairSizeForZoom(zoom);
+                return SizedBox(
+                  width: size,
+                  height: size,
+                  child: const CustomPaint(
+                    painter: _MapCenterCrosshairPainter(),
+                  ),
+                );
+              },
+            ),
+          );
+        },
+      ),
+    );
   }
 
   void _handleMapPointerDown(PointerDownEvent event) {
@@ -2233,17 +2323,22 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _mapGestureStart = null;
   }
 
-  void _handleCameraMove(CameraPosition _) {
-    if (!mounted || !_following) return;
+  void _handleCameraMove(CameraPosition position) {
+    final zoom = position.zoom;
+    if (zoom.isFinite && (_mapCameraZoom.value - zoom).abs() >= 0.01) {
+      _mapCameraZoom.value = zoom;
+    }
 
-    // A real touch gesture must win even if it overlaps the final milliseconds
-    // of a programmatic easeCamera animation.
+    if (!mounted) return;
+
+    // Once free-map mode is active, keep tracking zoom for crosshair scaling.
+    if (!_following) return;
+
+    // Only an actual touch gesture may leave Follow mode. Programmatic camera
+    // movement must never make the crosshair appear by itself.
     if (_activeMapPointers.isNotEmpty) {
       _disableFollowForUserGesture();
-      return;
     }
-    if (_programmaticCameraMove) return;
-    _disableFollowForUserGesture();
   }
 
   double _distanceToRouteMeters(LatLng point, List<LatLng> geometry) {
@@ -2310,6 +2405,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
         _routeOptions = routes;
         _selectedRouteIndex = 0;
         _following = true;
+        _mapCrosshairVisible.value = false;
       });
       _prepareRouteProgressCache();
       await _redrawRoute();
@@ -2451,7 +2547,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       // intentionally removed because it made the live view feel distant
       // and forced the driver to wait before the camera followed the car.
       if (mounted && identical(_destination, destination)) {
-        setState(() => _following = true);
+        _enableFollowMode();
         if (_lastPosition != null) await _onPosition(_lastPosition!);
       }
     } on TimeoutException {
@@ -2471,7 +2567,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _prepareRouteProgressCache();
     await _redrawRoute();
     if (!mounted) return;
-    setState(() => _following = true);
+    _enableFollowMode();
     if (_lastPosition != null) await _onPosition(_lastPosition!);
   }
 
@@ -3579,6 +3675,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
               child: SafeArea(
                 child: Stack(
                   children: [
+                    Positioned.fill(child: _mapCenterCrosshair()),
                     Positioned(
                       left: 20,
                       top: 17,
@@ -3724,7 +3821,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                             icon: Icons.my_location,
                             tooltip: 'Follow vehicle',
                             onPressed: () {
-                              setState(() => _following = true);
+                              _enableFollowMode();
                               if (_lastPosition != null) {
                                 _onPosition(_lastPosition!);
                               }
