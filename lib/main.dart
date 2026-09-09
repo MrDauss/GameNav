@@ -1179,33 +1179,37 @@ class _MapCenterCrosshairPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final half = size.shortestSide / 2;
-    final stroke = (size.shortestSide * 0.055).clamp(1.6, 2.8).toDouble();
 
-    // Thin dark edge keeps the white cross visible above bright roads.
-    final shadow = Paint()
-      ..color = const Color(0xB0000000)
-      ..strokeWidth = stroke + 2.2
-      ..strokeCap = StrokeCap.square;
-    final white = Paint()
+    // Four very thin white arms with an empty centre, matching the
+    // game-map reference. No outline and no shadow.
+    final gapHalf = (size.shortestSide * 0.12).clamp(4.0, 10.0).toDouble();
+    final stroke = (size.shortestSide * 0.014).clamp(0.9, 1.25).toDouble();
+    final paint = Paint()
       ..color = Colors.white
       ..strokeWidth = stroke
-      ..strokeCap = StrokeCap.square;
+      ..strokeCap = StrokeCap.square
+      ..style = PaintingStyle.stroke;
 
-    void draw(Paint paint) {
-      canvas.drawLine(
-        Offset(center.dx - half, center.dy),
-        Offset(center.dx + half, center.dy),
-        paint,
-      );
-      canvas.drawLine(
-        Offset(center.dx, center.dy - half),
-        Offset(center.dx, center.dy + half),
-        paint,
-      );
-    }
-
-    draw(shadow);
-    draw(white);
+    canvas.drawLine(
+      Offset(center.dx - half, center.dy),
+      Offset(center.dx - gapHalf, center.dy),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx + gapHalf, center.dy),
+      Offset(center.dx + half, center.dy),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx, center.dy - half),
+      Offset(center.dx, center.dy - gapHalf),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(center.dx, center.dy + gapHalf),
+      Offset(center.dx, center.dy + half),
+      paint,
+    );
   }
 
   @override
@@ -2240,10 +2244,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
   }
 
   double _crosshairSizeForZoom(double zoom) {
-    // Inverse scale: zooming OUT makes the cross larger, zooming IN makes it
-    // smaller. The clamp prevents it from becoming distracting at extremes.
-    final normalized = ((18.5 - zoom) / 7.0).clamp(0.0, 1.0).toDouble();
-    return 20.0 + (34.0 * normalized);
+    // Inverse scaling like the reference: zoom OUT = larger crosshair,
+    // zoom IN = smaller crosshair, with a smooth capped ratio.
+    final normalized = ((18.8 - zoom) / 7.8).clamp(0.0, 1.0).toDouble();
+    return 34.0 + (54.0 * normalized);
   }
 
   Widget _mapCenterCrosshair() {
