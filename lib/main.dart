@@ -592,7 +592,7 @@ const gameThemes = <GameThemeSpec>[
     accent: Colors.white,
     panel: Color(0xE60A0A0A),
     foreground: Colors.white,
-    routeColor: '#FFFFFF',
+    routeColor: '#B79CFF',
     icon: Icons.location_city,
   ),
   GameThemeSpec(
@@ -2494,18 +2494,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     _routeGlowLine = await map.addLine(
       LineOptions(
         geometry: route.geometry,
-        lineColor: monoRoute ? '#050505' : _theme.routeColor,
-        lineWidth: monoRoute ? 12 : 15,
-        lineOpacity: monoRoute ? 0.96 : 0.22,
-        lineBlur: monoRoute ? 0.0 : 3.0,
+        lineColor: monoRoute ? '#6F56D9' : _theme.routeColor,
+        lineWidth: monoRoute ? 12.8 : 15,
+        lineOpacity: monoRoute ? 0.55 : 0.22,
+        lineBlur: monoRoute ? 1.6 : 3.0,
         lineJoin: 'round',
       ),
     );
     _routeLine = await map.addLine(
       LineOptions(
         geometry: route.geometry,
-        lineColor: monoRoute ? '#FFFFFF' : _theme.routeColor,
-        lineWidth: monoRoute ? 6.2 : 7,
+        lineColor: monoRoute ? '#B79CFF' : _theme.routeColor,
+        lineWidth: monoRoute ? 6.6 : 7,
         lineOpacity: 0.99,
         lineJoin: 'round',
       ),
@@ -3325,20 +3325,37 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
       _searchResults = const [];
     });
 
-    // Keep the MapLibre platform view mounted continuously. The previous
-    // implementation opened two modal bottom sheets in sequence; on some
-    // Android devices that can briefly black out or destabilize the map view.
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+    // Let Flutter fully remove the floating search card and finish the current
+    // frame before sending annotation/camera commands to the native map view.
+    // This avoids drawing a route while Android is still transitioning the IME.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await Future<void>.delayed(const Duration(milliseconds: 16));
     if (mounted) await _buildRoutes(result);
   }
 
   Widget _searchOverlay() {
-    return Positioned.fill(
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final safeTop = MediaQuery.paddingOf(context).top;
+    final panelHeight = math.min(500.0, math.max(330.0, screenHeight * 0.52));
+
+    // Never cover the entire native map surface. Keeping a substantial part of
+    // MapLibre visible prevents Android Surface/TextureView black-frame issues
+    // and makes search feel like part of the map instead of a separate screen.
+    return Positioned(
+      left: 14,
+      right: 78,
+      top: safeTop + 68,
       child: Material(
-        color: const Color(0xF30A0A0A),
-        child: SafeArea(
+        color: const Color(0xF00A0A0A),
+        elevation: 12,
+        shadowColor: Colors.black,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: SizedBox(
+          height: panelHeight,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+            padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -3348,7 +3365,7 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                       child: Text(
                         'WHERE TO?',
                         style: gameDisplayStyle(
-                          fontSize: 31,
+                          fontSize: 27,
                           color: Colors.white,
                           fontFamily: kGameDisplayFont,
                           letterSpacing: 0.25,
@@ -3358,18 +3375,18 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     _gameRoundButton(
                       icon: Icons.close,
                       tooltip: 'Close search',
-                      size: 44,
+                      size: 38,
                       onPressed: _closeSearchPanel,
                     ),
                   ],
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: 10),
                 TextField(
                   controller: _searchController,
                   focusNode: _searchFocusNode,
                   textInputAction: TextInputAction.search,
                   onSubmitted: (_) => _performSearch(),
-                  style: const TextStyle(color: Colors.white, fontSize: 17),
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
                   decoration: InputDecoration(
                     hintText: 'Search a place or address',
                     hintStyle: const TextStyle(color: Color(0xFF8F8F8F)),
@@ -3380,32 +3397,39 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                     ),
                     filled: true,
                     fillColor: const Color(0xFF171717),
+                    isDense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
+                      borderRadius: BorderRadius.circular(14),
                       borderSide: const BorderSide(color: Color(0xFF424242)),
                     ),
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      borderSide: const BorderSide(color: Colors.white, width: 1.4),
+                      borderRadius: BorderRadius.circular(14),
+                      borderSide:
+                          const BorderSide(color: Colors.white, width: 1.3),
                     ),
                   ),
                 ),
                 if (_searchLoading) ...[
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 9),
                   const LinearProgressIndicator(
                     minHeight: 2,
-                    color: Colors.white,
+                    color: Color(0xFFB79CFF),
                     backgroundColor: Color(0xFF303030),
                   ),
                 ],
                 if (_searchError != null) ...[
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 10),
                   Text(
                     _searchError!,
-                    style: const TextStyle(color: Color(0xFFE4E4E4)),
+                    style: const TextStyle(
+                      color: Color(0xFFE4E4E4),
+                      fontSize: 12,
+                    ),
                   ),
                 ],
-                const SizedBox(height: 8),
+                const SizedBox(height: 7),
                 Expanded(
                   child: _searchResults.isEmpty
                       ? Center(
@@ -3430,8 +3454,9 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                           itemBuilder: (context, index) {
                             final r = _searchResults[index];
                             return ListTile(
+                              dense: true,
                               contentPadding:
-                                  const EdgeInsets.symmetric(horizontal: 4),
+                                  const EdgeInsets.symmetric(horizontal: 2),
                               leading: const Icon(
                                 Icons.place_outlined,
                                 color: Colors.white,
@@ -3447,35 +3472,43 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
                               ),
                               subtitle: Text(
                                 [
-                                  if (r.subtitle != null && r.subtitle!.isNotEmpty)
+                                  if (r.subtitle != null &&
+                                      r.subtitle!.isNotEmpty)
                                     r.subtitle!,
                                   if (r.distanceMeters != null)
                                     '${(r.distanceMeters! / 1000).toStringAsFixed(1)} km',
                                 ].join(' • '),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(color: Color(0xFFADADAD)),
+                                style: const TextStyle(
+                                  color: Color(0xFFADADAD),
+                                  fontSize: 11,
+                                ),
                               ),
                               trailing: r.durationSeconds == null
-                                  ? const Icon(Icons.chevron_right,
-                                      color: Colors.white)
+                                  ? const Icon(
+                                      Icons.chevron_right,
+                                      color: Colors.white,
+                                    )
                                   : Column(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      crossAxisAlignment: CrossAxisAlignment.end,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.end,
                                       children: [
                                         Text(
                                           '${(r.durationSeconds! / 60).round()} MIN',
                                           style: const TextStyle(
-                                            color: Colors.white,
+                                            color: Color(0xFFB79CFF),
                                             fontWeight: FontWeight.w900,
-                                            fontSize: 15,
+                                            fontSize: 14,
                                           ),
                                         ),
                                         Text(
                                           _arrivalTime(r.durationSeconds!),
                                           style: const TextStyle(
                                             color: Color(0xFF9D9D9D),
-                                            fontSize: 11,
+                                            fontSize: 10,
                                           ),
                                         ),
                                       ],
@@ -3612,6 +3645,10 @@ class _MapScreenState extends State<MapScreen> with WidgetsBindingObserver {
     return Directionality(
       textDirection: TextDirection.ltr,
       child: Scaffold(
+        // Keep the native MapLibre surface at a stable size while the search
+        // keyboard opens/closes. Resizing a platform view around the IME can
+        // leave some Android renderers black until the next native repaint.
+        resizeToAvoidBottomInset: false,
         backgroundColor: _gameUiBlack,
         body: Stack(
           children: [
